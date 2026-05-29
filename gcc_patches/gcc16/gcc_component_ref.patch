@@ -1,0 +1,280 @@
+From 7f4bdf93db513510aaada7cff9592070b58646e5 Mon Sep 17 00:00:00 2001
+From: York Jasper Niebuhr <yjnworkstation@gmail.com>
+Date: Fri, 17 Oct 2025 22:04:41 +0200
+Subject: [PATCH] c-family, c, plugin: Add PLUGIN_BUILD_COMPONENT_REF callback
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This patch adds the PLUGIN_BUILD_COMPONENT_REF callback, which is invoked
+by the C front end when a COMPONENT_REF node is built. The callback
+receives a pointer to the COMPONENT_REF tree (of type 'tree *'). Plugins
+may replace the node by assigning through the pointer, but any
+replacement must be type-compatible with the original node.
+
+The callback allows plugins to observe or instrument struct member
+accesses that would otherwise be lost due to folding before the earliest
+possible plugin pass or hook. In particular, the fold_offsetof
+functionality removes all traces of type and member information in
+offsetof-like trees, leaving only an integer constant for plugins to
+inspect.
+
+A considered alternative was to disable fold_offsetof altogether.
+However, that prevents offsetof expressions from qualifying as
+constant-expressions; for example, static assertions can no longer be
+evaluated if they contain non-folded offsetof expressions. The callback
+provides fine-grained control over individual COMPONENT_REFs instead of
+universally changing folding behavior.
+
+A typical use case would be to replace a select set of COMPONENT_REF
+nodes with type-compatible expressions calling a placeholder function,
+e.g. __deferred_offsetof(type, member). These calls cannot be folded
+away and thus remain available for plugin analysis in later passes.
+Offsets not of interest can be left untouched, preserving their const
+qualification and use in static assertions.
+
+Allowing PLUGIN_BUILD_COMPONENT_REF to alter COMPONENT_REF nodes required
+minor adjustments to fold_offsetof, which assumes a specific input
+format. Code paths that cannot guarantee that format should now use
+fold_offsetof_maybe(), which attempts to fold normally but, on failure,
+casts the unfolded expression to the desired output type.
+
+If the callback is not used to alter COMPONENT_REF trees, there is **no
+change** in GCC’s behavior.
+
+Signed-off-by: York Jasper Niebuhr <yjnworkstation@gmail.com>
+---
+ gcc/c-family/c-common.cc | 48 +++++++++++++++++++++++++++++++---------
+ gcc/c-family/c-common.h  |  3 ++-
+ gcc/c/c-parser.cc        |  2 +-
+ gcc/c/c-typeck.cc        | 11 +++++++++
+ gcc/doc/plugins.texi     |  6 +++++
+ gcc/plugin.cc            |  2 ++
+ gcc/plugin.def           |  6 +++++
+ 7 files changed, 65 insertions(+), 13 deletions(-)
+
+diff --git a/gcc/c-family/c-common.cc b/gcc/c-family/c-common.cc
+index 5acb221d31f..63f7158cde9 100644
+--- a/gcc/c-family/c-common.cc
++++ b/gcc/c-family/c-common.cc
+@@ -7223,10 +7223,11 @@ c_common_to_target_charset (HOST_WIDE_INT c)
+    the whole expression.  Return the folded result.  */
+ 
+ tree
+-fold_offsetof (tree expr, tree type, enum tree_code ctx)
++fold_offsetof (tree expr, tree type, enum tree_code ctx, bool may_fail)
+ {
+   tree base, off, t;
+   tree_code code = TREE_CODE (expr);
++
+   switch (code)
+     {
+     case ERROR_MARK:
+@@ -7243,33 +7244,37 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+      break;
+ 
+     case VAR_DECL:
+-      error ("cannot apply %<offsetof%> to static data member %qD", expr);
++      if (!may_fail)
++	error ("cannot apply %<offsetof%> to static data member %qD", expr);
+       return error_mark_node;
+ 
+     case CALL_EXPR:
+     case TARGET_EXPR:
+-      error ("cannot apply %<offsetof%> when %<operator[]%> is overloaded");
++      if (!may_fail)
++	error ("cannot apply %<offsetof%> when %<operator[]%> is overloaded");
+       return error_mark_node;
+ 
+     case NOP_EXPR:
+     case INDIRECT_REF:
+       if (!TREE_CONSTANT (TREE_OPERAND (expr, 0)))
+ 	{
+-	  error ("cannot apply %<offsetof%> to a non constant address");
++	  if (!may_fail)
++	    error ("cannot apply %<offsetof%> to a non constant address");
+ 	  return error_mark_node;
+ 	}
+       return convert (type, TREE_OPERAND (expr, 0));
+ 
+     case COMPONENT_REF:
+-      base = fold_offsetof (TREE_OPERAND (expr, 0), type, code);
++      base = fold_offsetof (TREE_OPERAND (expr, 0), type, code, may_fail);
+       if (base == error_mark_node)
+ 	return base;
+ 
+       t = TREE_OPERAND (expr, 1);
+       if (DECL_C_BIT_FIELD (t))
+ 	{
+-	  error ("attempt to take address of bit-field structure "
+-		 "member %qD", t);
++	  if (!may_fail)
++	    error ("attempt to take address of bit-field structure "
++		   "member %qD", t);
+ 	  return error_mark_node;
+ 	}
+       off = size_binop_loc (input_location, PLUS_EXPR, DECL_FIELD_OFFSET (t),
+@@ -7278,7 +7283,7 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+       break;
+ 
+     case ARRAY_REF:
+-      base = fold_offsetof (TREE_OPERAND (expr, 0), type, code);
++      base = fold_offsetof (TREE_OPERAND (expr, 0), type, code, may_fail);
+       if (base == error_mark_node)
+ 	return base;
+ 
+@@ -7335,17 +7340,38 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+     case COMPOUND_EXPR:
+       /* Handle static members of volatile structs.  */
+       t = TREE_OPERAND (expr, 1);
+-      gcc_checking_assert (VAR_P (get_base_address (t)));
+-      return fold_offsetof (t, type);
++      if (!VAR_P (get_base_address (t)))
++	return error_mark_node;
++      return fold_offsetof (t, type, ERROR_MARK, may_fail);
+ 
+     default:
+-      gcc_unreachable ();
++      return error_mark_node;
+     }
+ 
+   if (!POINTER_TYPE_P (type))
+     return size_binop (PLUS_EXPR, base, convert (type, off));
+   return fold_build_pointer_plus (base, off);
+ }
++
++/* Tries folding expr using fold_offsetof.  On success, the folded offsetof
++   is returned.  On failure, the original expr is wrapped in an ADDR_EXPR
++   and converted to the desired expression type.  The resulting expression
++   may or may not be constant!  */
++
++tree
++fold_offsetof_maybe (tree expr, tree type)
++{
++  /* expr might not have the correct structure, thus folding may fail.  */
++  tree maybe_folded = fold_offsetof (expr, type, ERROR_MARK, true);
++  if (maybe_folded != error_mark_node)
++    return maybe_folded;
++
++  tree ptr_type = build_pointer_type (TREE_TYPE (expr));
++  tree ptr = build1 (ADDR_EXPR, ptr_type, expr);
++
++  return fold_convert (type, ptr);
++}
++
+ 
+ /* *PTYPE is an incomplete array.  Complete it with a domain based on
+    INITIAL_VALUE.  If INITIAL_VALUE is not present, use 1 if DO_DEFAULT
+diff --git a/gcc/c-family/c-common.h b/gcc/c-family/c-common.h
+index 89517e2a80c..13e1a00ce88 100644
+--- a/gcc/c-family/c-common.h
++++ b/gcc/c-family/c-common.h
+@@ -1184,7 +1184,8 @@ extern bool c_dump_tree (void *, tree);
+ extern void verify_sequence_points (tree);
+ 
+ extern tree fold_offsetof (tree, tree = size_type_node,
+-			   tree_code ctx = ERROR_MARK);
++			   tree_code ctx = ERROR_MARK, bool may_fail = false);
++extern tree fold_offsetof_maybe (tree, tree = size_type_node);
+ 
+ extern int complete_array_type (tree *, tree, bool);
+ extern void complete_flexible_array_elts (tree);
+diff --git a/gcc/c/c-parser.cc b/gcc/c/c-parser.cc
+index 0b8b2387109..5e4d65814e1 100644
+--- a/gcc/c/c-parser.cc
++++ b/gcc/c/c-parser.cc
+@@ -12170,7 +12170,7 @@ c_parser_postfix_expression (c_parser *parser)
+ 	    location_t end_loc = c_parser_peek_token (parser)->get_finish ();
+ 	    c_parser_skip_until_found (parser, CPP_CLOSE_PAREN,
+ 				       "expected %<)%>");
+-	    expr.value = fold_offsetof (offsetof_ref);
++	    expr.value = fold_offsetof_maybe (offsetof_ref);
+ 	    set_c_expr_source_range (&expr, loc, end_loc);
+ 	  }
+ 	  break;
+diff --git a/gcc/c/c-typeck.cc b/gcc/c/c-typeck.cc
+index aa368a6e95a..232bf487d21 100644
+--- a/gcc/c/c-typeck.cc
++++ b/gcc/c/c-typeck.cc
+@@ -55,6 +55,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "realmpfr.h"
+ #include "tree-pretty-print-markup.h"
+ #include "gcc-urlifier.h"
++#include "plugin.h"
+ 
+ /* Possible cases of implicit conversions.  Used to select diagnostic messages
+    and control folding initializers in convert_for_assignment.  */
+@@ -3440,6 +3441,16 @@ build_component_ref (location_t loc, tree datum, tree component,
+ 	  else if (TREE_DEPRECATED (subdatum))
+ 	    warn_deprecated_use (subdatum, NULL_TREE);
+ 
++      tree pre_cb_type = TREE_TYPE (ref);
++      if (invoke_plugin_callbacks (PLUGIN_BUILD_COMPONENT_REF, &ref)
++	      == PLUGEVT_SUCCESS
++	      && !comptypes (TREE_TYPE (ref), pre_cb_type))
++	{
++	  error_at (EXPR_LOCATION (ref),
++		    "PLUGIN_BUILD_COMPONENT_REF callback returned"
++		    " expression of incompatible type");
++	}
++
+ 	  datum = ref;
+ 
+ 	  field = TREE_CHAIN (field);
+diff --git a/gcc/doc/plugins.texi b/gcc/doc/plugins.texi
+index ff0b5866f25..5e808013899 100644
+--- a/gcc/doc/plugins.texi
++++ b/gcc/doc/plugins.texi
+@@ -218,6 +218,12 @@ enum plugin_event
+    as a const char* pointer.  */
+   PLUGIN_INCLUDE_FILE,
+ 
++  /* Called by the C front end when a COMPONENT_REF node is built.  The
++     callback receives a pointer to the COMPONENT_REF tree (of type 'tree *').
++     Plugins may replace the node by assigning through the pointer, but any
++     replacement must be type-compatible with the original node.  */
++  PLUGIN_BUILD_COMPONENT_REF,
++
+   PLUGIN_EVENT_FIRST_DYNAMIC    /* Dummy event used for indexing callback
+                                    array.  */
+ @};
+diff --git a/gcc/plugin.cc b/gcc/plugin.cc
+index 436be5e0147..3ea21956335 100644
+--- a/gcc/plugin.cc
++++ b/gcc/plugin.cc
+@@ -499,6 +499,7 @@ register_callback (const char *plugin_name,
+       case PLUGIN_EARLY_GIMPLE_PASSES_END:
+       case PLUGIN_NEW_PASS:
+       case PLUGIN_INCLUDE_FILE:
++      case PLUGIN_BUILD_COMPONENT_REF:
+         {
+           struct callback_info *new_callback;
+           if (!callback)
+@@ -579,6 +580,7 @@ invoke_plugin_callbacks_full (int event, void *gcc_data)
+       case PLUGIN_EARLY_GIMPLE_PASSES_END:
+       case PLUGIN_NEW_PASS:
+       case PLUGIN_INCLUDE_FILE:
++      case PLUGIN_BUILD_COMPONENT_REF:
+         {
+           /* Iterate over every callback registered with this event and
+              call it.  */
+diff --git a/gcc/plugin.def b/gcc/plugin.def
+index b2fd27fa6e1..d44d45385b9 100644
+--- a/gcc/plugin.def
++++ b/gcc/plugin.def
+@@ -99,6 +99,12 @@ DEFEVENT (PLUGIN_NEW_PASS)
+    as a const char* pointer.  */
+ DEFEVENT (PLUGIN_INCLUDE_FILE)
+ 
++/* Called by the C front end when a COMPONENT_REF node is built.
++   The callback receives a pointer to the COMPONENT_REF tree (of type 'tree *').
++   Plugins may replace the node by assigning through the pointer, but any
++   replacement must be type-compatible with the original node.  */
++DEFEVENT (PLUGIN_BUILD_COMPONENT_REF)
++
+ /* When adding a new hard-coded plugin event, don't forget to edit in
+    file plugin.cc the functions register_callback and
+    invoke_plugin_callbacks_full accordingly!  */
+-- 
+2.43.0
+

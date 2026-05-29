@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.6.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Overview of SPSLR: status, scope and motivation.">
+    <title>Overview · SPSLR</title>
+    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href=
+    "https://cdn.jsdelivr.net/npm/prismjs/themes/prism-okaidia.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/prism.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-c.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-bash.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-nasm.min.js"></script>
+    <script defer src="assets/main.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="index.html" aria-label=
+        "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
+        aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="index.html" aria-current="page">Overview</a> <a href=
+            "architecture.html">Architecture</a> <a href="bootpatch-slr.html">Bootpatch-SLR</a>
+            <a href="discussion.html">Discussion</a>
+        </nav>
+    </header>
+    <main class="layout">
+        <aside class="toc" aria-label="Page contents">
+            <button class="toc-toggle" type="button" aria-expanded="true"><span class=
+            "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
+            <div class="toc-links">
+                <a href="#overview">Overview</a> <a href="#chapters">Chapters</a> <a href=
+                "#motivation">Motivation</a>
+            </div>
+        </aside>
+        <article class="content">
+            <section class="hero" id="overview">
+                <p class="eyebrow">Overview</p>
+                <h1>Selfpatch-SLR</h1>
+                <p class="lead">Selfpatch-SLR (SPSLR) explores runtime structure layout
+                randomization for C programs through compiler-assisted metadata generation and
+                runtime patching of layout-sensitive code and static data.</p>
+                <div class="note warning">
+                    <strong>Current status:</strong> research prototype. The SPSLR approach is
+                    implemented and the Linux kernel adaptation (Bootpatch-SLR / BPSLR) has
+                    successfully booted Ubuntu 24.04 using a custom Linux 6.12 kernel with
+                    runtime-randomized <code class="language-c">task_struct</code> layouts. It is
+                    not presented as production-hardened software.
+                </div>
+            </section>
+            <section id="chapters">
+                <h2>Chapters</h2>
+                <ol class="reading-list">
+                    <li>
+                        <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                        "">Repository README / getting started guide</a>
+                    </li>
+                    <li>
+                        <a href="index.html">Overview</a> is where you are at. It specifies the
+                        scope and motivation of this project.
+                    </li>
+                    <li>
+                        <a href="architecture.html">Architecture</a> explains the full SPSLR
+                        pipeline, including terminology, pinpoint, patchcompile, and selfpatch.
+                    </li>
+                    <li>
+                        <a href="bootpatch-slr.html">Bootpatch-SLR</a> describes the
+                        Linux-kernel-specific direction.
+                    </li>
+                    <li>
+                        <a href="discussion.html">Discussion</a> collects mailing list archive
+                        entries and public review material.
+                    </li>
+                </ol>
+            </section>
+            <section id="motivation">
+                <h2>Motivation</h2>
+                <p>Structure layout randomization (SLR) is intended to make memory corruption
+                exploitation more difficult by changing the in-memory placement of structure
+                members. Many exploits rely on corrupting a specific member inside a target object,
+                for example function pointers, reference counters, credentials, length fields, or
+                linked-list pointers. Those attacks often depend on the attacker knowing the
+                relative offsets of members within the structure. By randomizing structure layouts,
+                those offsets become less predictable. An overwrite that successfully corrupts a
+                useful target member in one layout may instead corrupt an unrelated field in
+                another layout, potentially causing the exploit to fail or become unreliable.</p>
+                <p>Doing this at compile-time produces one random but fixed set of layouts per
+                compiled binary. Every deployed instance of that binary shares the same layouts.
+                Thus, an attacker that learns the structure layouts of one deployed instance can
+                produce static exploits based on overwrite primitives that remain valid across all
+                identical instances.</p>
+                <p>SPSLR investigates a different point in the design space. Instead of treating
+                the randomized layouts as a fixed compile-time property, it moves the final layout
+                decision to runtime. To make that possible, the compiler must expose the places
+                where generated code or static data relies on structure offsets, and the runtime
+                must patch those places after choosing the randomized layout.</p>
+            </section>
+        </article>
+    </main>
+    <footer class="site-footer">
+        <span>SPSLR documentation</span> <a href="https://github.com/YJN-Systems/Selfpatch-SLR"
+        data-external="">SPSLR Repository</a>
+    </footer>
+</body>
+</html>

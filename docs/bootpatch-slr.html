@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.6.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Bootpatch-SLR: Linux-kernel-oriented adaptation of SPSLR.">
+    <title>Bootpatch-SLR · SPSLR</title>
+    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href=
+    "https://cdn.jsdelivr.net/npm/prismjs/themes/prism-okaidia.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/prism.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-c.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-bash.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-nasm.min.js"></script>
+    <script defer src="assets/main.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="index.html" aria-label=
+        "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
+        aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="index.html">Overview</a> <a href="architecture.html">Architecture</a> <a href=
+            "bootpatch-slr.html" aria-current="page">Bootpatch-SLR</a> <a href=
+            "discussion.html">Discussion</a>
+        </nav>
+    </header>
+    <main class="layout">
+        <aside class="toc" aria-label="Page contents">
+            <button class="toc-toggle" type="button" aria-expanded="true"><span class=
+            "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
+            <div class="toc-links">
+                <a href="#bpslr">Bootpatch-SLR</a> <a href="#status">Status</a> <a href=
+                "#randstruct">Why not RandStruct?</a> <a href="#implementation">Current
+                implementation</a> <a href="#repository">Repository</a> <a href="#todo">Known
+                issues</a>
+            </div>
+        </aside>
+        <article class="content">
+            <section class="hero" id="bpslr">
+                <p class="eyebrow">Bootpatch-SLR</p>
+                <h1>Linux kernel implementation</h1>
+                <p class="lead">Bootpatch-SLR, or BPSLR, is the Linux kernel implementation of
+                SPSLR.</p>
+            </section>
+            <section id="status">
+                <h2>Project status</h2>
+                <div class="note">
+                    <strong>Research prototype:</strong> BPSLR is currently experimental and
+                    intended for evaluation and development. The prototype has successfully booted
+                    Ubuntu 24.04 with a custom Linux 6.12 kernel using an almost-default Ubuntu
+                    kernel configuration.
+                </div>
+                <ul>
+                    <li>Runtime randomization of most of <code class=
+                    "language-c">task_struct</code></li>
+                    <li>Successful boot into userspace on Ubuntu 24.04</li>
+                    <li>Implementation in progress...</li>
+                </ul>
+            </section>
+            <section id="randstruct">
+                <h2>Why not RandStruct?</h2>
+                <p>The Linux kernel already supports structure layout randomization through
+                RandStruct. RandStruct is a compile-time hardening feature: selected structures are
+                randomized while the kernel is built, and the resulting layout is fixed in the
+                produced kernel image.</p>
+                <p>This is valuable, but it is not sufficient for the deployment model used by many
+                distributions. A distribution typically builds one kernel image and ships that same
+                image to many machines. If structure layouts are decided at compile time, all
+                systems using that image share the same randomized layouts. Once the layout of that
+                build is known, the layout is no longer instance-specific.</p>
+                <p>BPSLR investigates the stronger model: keep the kernel image distributable, but
+                choose selected structure layouts during boot. The goal is to provide per-boot or
+                per-machine layout diversity without requiring each user or distribution target to
+                build a private kernel.</p>
+            </section>
+            <section id="implementation">
+                <h2>Current implementation</h2>
+                <p>The current BPSLR prototype randomizes most of <code class=
+                "language-c">task_struct</code>. Some fields remain fixed. These fixed fields are
+                required where the current compiler instrumentation must preserve compile-time
+                evaluability, matching the fixed-field restriction described in the SPSLR
+                architecture documentation.</p>
+                <p>BPSLR reuses the SPSLR pipeline almost entirely. The existing <code class=
+                "language-c">pinpoint</code> and <code class="language-c">patchcompile</code>
+                components are used unchanged, including compiler instrumentation, dependency
+                tracking, and metadata generation. Only the <code class=
+                "language-c">selfpatch</code> stage is adapted to the Linux kernel environment,
+                where an early boot-time patching step applies the selected randomized layout
+                before randomized structures are used during normal kernel execution.</p>
+                <p>BPSLR has successfully booted into Ubuntu 24.04 using a custom Linux 6.12 kernel
+                built from an almost-default Ubuntu kernel configuration for that release. The
+                prototype currently demonstrates successful early boot and userspace startup with
+                runtime-randomized kernel structure layouts, serving as an initial proof of
+                feasibility for the approach.</p>
+            </section>
+            <section id="repository">
+                <h2>Repository and development branch</h2>
+				<p>BPSLR is developed in a separate <a href="https://github.com/YJN-Systems/Bootpatch-SLR" data-external="">Linux kernel mirror</a>.</p>
+                <div class="note">
+                    <strong>Code location:</strong> The current development branch for BPSLR is
+					<a href="https://github.com/YJN-Systems/Bootpatch-SLR/tree/bpslr-dev-6.12" data-external=""><code>bpslr-dev-6.12</code></a>.
+                </div>
+                <pre><code class="language-bash">git clone https://github.com/YJN-Systems/Bootpatch-SLR.git
+  cd linux
+  git switch bpslr-dev-6.12</code></pre>
+            </section>
+            <section id="todo">
+                <h2>Known issues</h2>
+                <p>The following is a list of outstanding issues and work items:</p>
+                <ul>
+                    <li><strong>BTF is not patched yet.</strong> Kernel BTF metadata still
+                    describes the compile-time layout and must be updated or otherwise handled
+                    before BPSLR can be considered complete.</li>
+                    <li><strong>Only part of <code class="language-c">task_struct</code> is
+                    randomized.</strong> The current prototype randomizes most fields, but leaves
+                    fields fixed where required by compile-time layout constraints. A new pointer
+                    pin concept may allow pinpoint to restore compile-time availability of field
+                    pointers in static initializers, while marking those pointers in static data
+                    for patching.</li>
+                    <li><strong>Additional kernel structures should be randomized.</strong> The
+                    current focus is the <code class="language-c">task_struct</code>; broader
+                    coverage requires auditing more structures and their initialization, ABI,
+                    debugging, and metadata interactions.</li>
+                </ul>
+            </section>
+        </article>
+    </main>
+    <footer class="site-footer">
+        <span>SPSLR documentation</span> <a href="https://github.com/YJN-Systems/Selfpatch-SLR"
+        data-external="">SPSLR Repository</a>
+    </footer>
+</body>
+</html>

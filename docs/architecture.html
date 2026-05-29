@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.6.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content=
+    "SPSLR architecture: terminology, compiler instrumentation, metadata consolidation, runtime selfpatching, and limitations.">
+    <title>Architecture · SPSLR</title>
+    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href=
+    "https://cdn.jsdelivr.net/npm/prismjs/themes/prism-okaidia.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/prism.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-c.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-bash.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-nasm.min.js"></script>
+    <script defer src="assets/main.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="index.html" aria-label=
+        "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
+        aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="index.html">Overview</a> <a href="architecture.html" aria-current=
+            "page">Architecture</a> <a href="bootpatch-slr.html">Bootpatch-SLR</a> <a href=
+            "discussion.html">Discussion</a>
+        </nav>
+    </header>
+    <main class="layout">
+        <aside class="toc" aria-label="Page contents">
+            <button class="toc-toggle" type="button" aria-expanded="true"><span class=
+            "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
+            <div class="toc-links">
+                <a href="#architecture">Architecture</a> <a href="#terms">Terminology</a> <a href=
+                "#pipeline">Pipeline</a> <a class="toc-child" href="#pinpoint">Pinpoint</a>
+                <a class="toc-child" href="#patchcompile">Patchcompile</a> <a class="toc-child"
+                href="#selfpatch">Selfpatch</a> <a href="#limitations">Limitations</a>
+            </div>
+        </aside>
+        <article class="content">
+            <section class="hero" id="architecture">
+                <p class="eyebrow">Architecture</p>
+                <h1>Compiler-guided runtime patching</h1>
+                <p class="lead">SPSLR is a pipeline. Compiler instrumentation preserves
+                field-offset dependencies, patchcompile turns them into runtime descriptors, and
+                selfpatch applies a randomized layout to code and data at startup.</p>
+            </section>
+            <section id="terms">
+                <h2>Terminology</h2>
+                <div class="card-grid">
+                    <!-- subject, module, target, ipin, dpin -->
+                    <article class="card">
+                        <h3>Subject</h3>
+                        <p>A binary entity participating in layout randomization and SPSLR
+                        patching.</p>
+                    </article>
+                    <article class="card">
+                        <h3>Host Subject</h3>
+                        <p>The primary SPSLR subject that owns the runtime state and target
+                        namespace.</p>
+                    </article>
+                    <article class="card">
+                        <h3>Module Subject</h3>
+                        <p>A dynamically loaded subject that attaches to an already initialized
+                        host subject.</p>
+                    </article>
+                    <article class="card">
+                        <h3>Target</h3>
+                        <p>A structure type selected for layout randomization.</p>
+                    </article>
+                    <article class="card">
+                        <h3>Instruction Pin</h3>
+                        <p>A patch site for a machine instruction immediate that encodes a field
+                        offset.</p>
+                    </article>
+                    <article class="card">
+                        <h3>Data Pin</h3>
+                        <p>A patch site for static data in a subject's image that contains an
+                        instance of a target.</p>
+                    </article>
+                </div>
+            </section>
+            <section id="pipeline">
+                <h2>Pipeline</h2>
+                <p>The SPSLR pipeline starts with ordinary C sources that annotate target
+                structures with the compiler directive <b>__attribute__((spslr))</b>. Fields that
+                should not be randomized must be marked with
+                <b>__attribute__((spslr_field_fixed))</b>. The <b>pinpoint</b> compiler plugin
+                identifies and instruments target field accesses, as well as static occurrences of
+                target instances in individual compilation units. In each case, it logs metadata,
+                such as which field an instruction accesses, and dumps it in an accompanying
+                <b>[source].c.spslr</b> file.</p>
+                <p>After all compilation units have been compiled and thus all patch sites have
+                been pinpointed, the <b>patchcompile</b> command line tool collects the SPSLR
+                metadata from all produced <b>.spslr</b> files. It generates a globally unified set
+                of targets and maps patch site information to an efficient runtime representation.
+                The results are compiled into a single <b>[subject]_spslr_section.S</b> assembly
+                file which can further be assembled into <b>[subject]_spslr_section.o</b>.</p>
+                <p>The runtime patcher, <b>selfpatch</b>, comes as its own set of C source files.
+                For the sake of simplicity, this documentation will synonymously refer to them as
+                just <b>selfpatch.c</b>. It is compiled without the <b>pinpoint</b> plugin and,
+                together with all subject objects and <b>[subject]_spslr_section.o</b>, linked into
+                the host subject binary. A small public API provides hooks for randomizing the
+                target layouts and patching host or module subject images in memory.</p>
+                <p>SPSLR currently requires a small GCC patch. The pinpoint plugin must observe
+                certain offsetof-like field-offset expressions before the GCC C parser folds them
+                into compile-time constants. Because the earliest mainline plugin hooks execute
+                after this folding step, SPSLR adds a lightweight parser hook that exposes these
+                expressions to pinpoint before they are simplified.</p>
+                <p>Aside from this parser hook, SPSLR remains implemented as ordinary tooling
+                around GCC. Instructions for building the SPSLR toolchain, applying the GCC patch,
+                and compiling SPSLR subjects are provided in the <a href=
+                "https://github.com/YJN-Systems/Selfpatch-SLR" data-external="">project
+                README</a>.</p>
+                <figure class="spslr-svg-figure">
+                    <figcaption>
+                        <strong>Worked build-flow overview:</strong> click a source file, metadata
+                        file, or connector to see the concrete artifact or command used at that
+                        step.
+                    </figcaption>
+                    <div class="spslr-diagram-wrap">
+                        <svg class="spslr-diagram" viewbox="0 0 1780 1040" role="img">
+                        <defs>
+                            <marker id="arrow-head" markerwidth="7" markerheight="7" refx="6" refy=
+                            "3.5" orient="auto" markerunits="strokeWidth">
+                                <path d="M 0 0 L 7 3.5 L 0 7 z" class="svg-arrow-head"></path>
+                            </marker>
+                        </defs>
+                        <text x="40" y="38" class="svg-lane-label">
+                            host subject build
+                        </text>
+                        <text x="40" y="700" class="svg-lane-label">
+                            module subject build
+                        </text><!-- Host: selfpatch path -->
+                        <g class="svg-node" tabindex="0" data-detail="compile-selfpatch">
+                            <rect x="40" y="70" width="155" height="62" rx="12"></rect>
+                            <text x="117" y="97" text-anchor="middle" class="svg-node-title">
+                                selfpatch.c
+                            </text>
+                            <text x="117" y="117" text-anchor="middle" class="svg-node-subtitle">
+                                no pinpoint
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="compile-selfpatch">
+                            <rect x="310" y="75" width="140" height="52" rx="10"></rect>
+                            <text x="380" y="107" text-anchor="middle" class="svg-node-title">
+                                selfpatch.o
+                            </text>
+                        </g><!-- Host sources -->
+                        <g class="svg-node" tabindex="0" data-detail="source-a">
+                            <rect x="40" y="180" width="145" height="70" rx="12"></rect>
+                            <text x="112" y="210" text-anchor="middle" class="svg-node-title">
+                                a.c
+                            </text>
+                            <text x="112" y="232" text-anchor="middle" class="svg-node-subtitle">
+                                struct A + ipin
+                            </text>
+                        </g>
+                        <g class="svg-node" tabindex="0" data-detail="source-b">
+                            <rect x="40" y="330" width="145" height="70" rx="12"></rect>
+                            <text x="112" y="360" text-anchor="middle" class="svg-node-title">
+                                b.c
+                            </text>
+                            <text x="112" y="382" text-anchor="middle" class="svg-node-subtitle">
+                                struct A + dpin
+                            </text>
+                        </g>
+                        <g class="svg-node" tabindex="0" data-detail="source-main">
+                            <rect x="40" y="480" width="145" height="70" rx="12"></rect>
+                            <text x="112" y="510" text-anchor="middle" class="svg-node-title">
+                                main.c
+                            </text>
+                            <text x="112" y="532" text-anchor="middle" class="svg-node-subtitle">
+                                struct B + main
+                            </text>
+                        </g><!-- Host compile outputs -->
+                        <g class="svg-node small" tabindex="0" data-detail="object-a">
+                            <rect x="310" y="155" width="120" height="52" rx="10"></rect>
+                            <text x="370" y="187" text-anchor="middle" class="svg-node-title">
+                                a.o
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="spslr-a">
+                            <rect x="310" y="230" width="150" height="52" rx="10"></rect>
+                            <text x="385" y="262" text-anchor="middle" class="svg-node-title">
+                                a.c.spslr
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="object-b">
+                            <rect x="310" y="305" width="120" height="52" rx="10"></rect>
+                            <text x="370" y="337" text-anchor="middle" class="svg-node-title">
+                                b.o
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="spslr-b">
+                            <rect x="310" y="380" width="150" height="52" rx="10"></rect>
+                            <text x="385" y="412" text-anchor="middle" class="svg-node-title">
+                                b.c.spslr
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="object-main">
+                            <rect x="310" y="455" width="120" height="52" rx="10"></rect>
+                            <text x="370" y="487" text-anchor="middle" class="svg-node-title">
+                                main.o
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="spslr-main">
+                            <rect x="310" y="530" width="150" height="52" rx="10"></rect>
+                            <text x="385" y="562" text-anchor="middle" class="svg-node-title">
+                                main.c.spslr
+                            </text>
+                        </g><!-- Host patchcompile and outputs -->
+                        <g class="svg-node" tabindex="0" data-detail="host-patchcompile">
+                            <rect x="600" y="565" width="185" height="76" rx="12"></rect>
+                            <text x="692" y="596" text-anchor="middle" class="svg-node-title">
+                                patchcompile
+                            </text>
+                            <text x="692" y="618" text-anchor="middle" class="svg-node-subtitle">
+                                host metadata
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="host-section">
+                            <rect x="920" y="540" width="205" height="54" rx="10"></rect>
+                            <text x="1022" y="573" text-anchor="middle" class="svg-node-title">
+                                host_spslr_section.S
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="host-section">
+                            <rect x="1210" y="540" width="205" height="54" rx="10"></rect>
+                            <text x="1312" y="573" text-anchor="middle" class="svg-node-title">
+                                host_spslr_section.o
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="host-target-map">
+                            <rect x="920" y="625" width="190" height="54" rx="10"></rect>
+                            <text x="1015" y="658" text-anchor="middle" class="svg-node-title">
+                                host.spslr_targets
+                            </text>
+                        </g>
+                        <g class="svg-node" tabindex="0" data-detail="link-host">
+                            <rect x="1550" y="290" width="150" height="82" rx="12"></rect>
+                            <text x="1625" y="322" text-anchor="middle" class="svg-node-title">
+                                host
+                            </text>
+                            <text x="1625" y="345" text-anchor="middle" class="svg-node-subtitle">
+                                subject binary
+                            </text>
+                        </g><!-- Host source compilation -->
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-selfpatch" d=
+                        "M 195 101 H 310"></path>
+                        <path class="svg-edge" data-detail="compile-a" d="M 185 215 H 240"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-a" d=
+                        "M 240 215 V 181 H 310"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-a" d=
+                        "M 240 215 V 256 H 310"></path>
+                        <path class="svg-edge" data-detail="compile-b" d="M 185 365 H 240"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-b" d=
+                        "M 240 365 V 331 H 310"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-b" d=
+                        "M 240 365 V 406 H 310"></path>
+                        <path class="svg-edge" data-detail="compile-main" d="M 185 515 H 240">
+                        </path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-main" d=
+                        "M 240 515 V 481 H 310"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-main" d=
+                        "M 240 515 V 556 H 310"></path><!-- Host metadata collection -->
+                        <path class="svg-edge" data-detail="host-patchcompile" d="M 460 256 H 520">
+                        </path>
+                        <path class="svg-edge" data-detail="host-patchcompile" d="M 460 406 H 520">
+                        </path>
+                        <path class="svg-edge" data-detail="host-patchcompile" d="M 460 556 H 520">
+                        </path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="host-patchcompile" d=
+                        "M 520 256 V 603 H 600"></path>
+                        <!-- Host patchcompile: single line, then split -->
+                        <path class="svg-edge" data-detail="host-patchcompile" d="M 785 603 H 845">
+                        </path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="host-patchcompile" d=
+                        "M 845 603 V 567 H 920"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="host-patchcompile" d=
+                        "M 845 603 V 652 H 920"></path><!-- Host .S assembly -->
+                        <path class="svg-edge svg-edge-arrow" data-detail="host-section" d=
+                        "M 1125 567 H 1210"></path>
+                        <!-- Host link: all objects merge, then enter link box -->
+                        <path class="svg-edge muted" data-detail="link-host" d="M 450 101 H 1460">
+                        </path>
+                        <path class="svg-edge muted" data-detail="link-host" d="M 430 181 H 1460">
+                        </path>
+                        <path class="svg-edge muted" data-detail="link-host" d="M 430 331 H 1460">
+                        </path>
+                        <path class="svg-edge muted" data-detail="link-host" d="M 430 481 H 1460">
+                        </path>
+                        <path class="svg-edge muted" data-detail="link-host" d="M 1415 567 H 1460">
+                        </path>
+                        <path class="svg-edge muted" data-detail="link-host" d="M 1460 101 V 567">
+                        </path>
+                        <path class="svg-edge muted svg-edge-arrow" data-detail="link-host" d=
+                        "M 1460 331 H 1550"></path><!-- Module source and outputs -->
+                        <g class="svg-node" tabindex="0" data-detail="module-source">
+                            <rect x="40" y="790" width="145" height="70" rx="12"></rect>
+                            <text x="112" y="820" text-anchor="middle" class="svg-node-title">
+                                module.c
+                            </text>
+                            <text x="112" y="842" text-anchor="middle" class="svg-node-subtitle">
+                                uses struct A
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="module-spslr">
+                            <rect x="310" y="740" width="165" height="52" rx="10"></rect>
+                            <text x="392" y="772" text-anchor="middle" class="svg-node-title">
+                                module.c.spslr
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="module-object">
+                            <rect x="310" y="855" width="140" height="52" rx="10"></rect>
+                            <text x="380" y="887" text-anchor="middle" class="svg-node-title">
+                                module.o
+                            </text>
+                        </g>
+                        <g class="svg-node" tabindex="0" data-detail="module-patchcompile">
+                            <rect x="600" y="730" width="185" height="76" rx="12"></rect>
+                            <text x="692" y="761" text-anchor="middle" class="svg-node-title">
+                                patchcompile
+                            </text>
+                            <text x="692" y="783" text-anchor="middle" class="svg-node-subtitle">
+                                module metadata
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="module-section">
+                            <rect x="920" y="740" width="220" height="54" rx="10"></rect>
+                            <text x="1030" y="773" text-anchor="middle" class="svg-node-title">
+                                module_spslr_section.S
+                            </text>
+                        </g>
+                        <g class="svg-node small" tabindex="0" data-detail="module-section">
+                            <rect x="1210" y="740" width="220" height="54" rx="10"></rect>
+                            <text x="1320" y="773" text-anchor="middle" class="svg-node-title">
+                                module_spslr_section.o
+                            </text>
+                        </g>
+                        <g class="svg-node" tabindex="0" data-detail="link-module">
+                            <rect x="1550" y="783" width="150" height="82" rx="12"></rect>
+                            <text x="1625" y="815" text-anchor="middle" class="svg-node-title">
+                                module.so
+                            </text>
+                            <text x="1625" y="838" text-anchor="middle" class="svg-node-subtitle">
+                                module subject
+                            </text>
+                        </g><!-- Module compilation -->
+                        <path class="svg-edge" data-detail="compile-module" d="M 185 825 H 240">
+                        </path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-module" d=
+                        "M 240 825 V 766 H 310"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="compile-module" d=
+                        "M 240 825 V 881 H 310"></path>
+                        <!-- Module patchcompile inputs: module metadata + host target map -->
+                        <path class="svg-edge dashed" data-detail="module-patchcompile" d=
+                        "M 1110 652 H 1140 V 705 H 525 V 768"></path>
+                        <path class="svg-edge svg-edge-arrow" data-detail="module-patchcompile" d=
+                        "M 475 766 H 600"></path><!-- Module patchcompile output -->
+                        <path class="svg-edge svg-edge-arrow" data-detail="module-patchcompile" d=
+                        "M 785 768 H 920"></path><!-- Module .S assembly -->
+                        <path class="svg-edge svg-edge-arrow" data-detail="module-section" d=
+                        "M 1140 767 H 1210"></path>
+                        <!-- Module link: all objects merge, then enter link box -->
+                        <path class="svg-edge muted" data-detail="link-module" d=
+                        "M 450 881 H 1460"></path>
+                        <path class="svg-edge muted" data-detail="link-module" d=
+                        "M 1430 767 H 1460"></path>
+                        <path class="svg-edge muted" data-detail="link-module" d=
+                        "M 1460 767 V 881"></path>
+                        <path class="svg-edge muted svg-edge-arrow" data-detail="link-module" d=
+                        "M 1460 825 H 1550"></path></svg>
+                        <aside class="spslr-diagram-detail" aria-live="polite">
+                            <p class="detail-kicker">Worked build flow</p>
+                            <h4>SPSLR build artifacts</h4>
+                            <p>Click a block or connector to see the source snippet, metadata
+                            snippet, or command for that step.</p>
+                        </aside>
+                    </div>
+                </figure>
+            </section>
+            <section id="pinpoint">
+                <h3>Pinpoint: compiler instrumentation</h3>
+                <p><b>pinpoint</b> is the compiler instrumentation component of SPSLR. Its task is
+                to identify where generated code or static data depends on structure field offsets
+                and to expose those dependencies as SPSLR patch metadata.</p>
+                <p>During compilation, pinpoint discovers randomized <b>targets</b> and constructs
+                a compilation-unit-local target model. Each target receives a local target ID and a
+                description of its field layout, including byte offsets, sizes, alignment, and
+                field attributes such as <b>spslr_field_fixed</b>.</p>
+                <h4>Instruction pins</h4>
+                <p>An <b>instruction pin</b> (ipin) represents a machine instruction whose
+                immediate operand encodes a structure field offset. Pinpoint transforms field
+                accesses so the original target and field-offset relationship remains visible
+                throughout compilation and can later be rewritten after runtime layout
+                randomization.</p>
+                <p>Conceptually, a field access:</p>
+                <pre><code class="language-c">obj-&gt;field</code></pre>
+                <p>becomes an access using an SPSLR separator value:</p>
+                <pre><code class="language-c">*(typeof(field) *)
+((char *)obj + separator(target_id, field_offset))</code></pre>
+                <p>Later, the separator is lowered into a real machine instruction whose immediate
+                bytes are named by an assembler symbol and represent the field offset. Those bytes
+                become the actual instruction pin patched by selfpatch.</p>
+                <p>For each instruction pin, pinpoint records:</p>
+                <ul>
+                    <li>the assembler symbol naming the instruction immediate bytes,</li>
+                    <li>the local target ID,</li>
+                    <li>the original field offset inside the target,</li>
+                    <li>and the immediate width to be patched.</li>
+                </ul>
+                <pre><code class="language-nasm">.globl spslr_a_ipin0
+.hidden spslr_a_ipin0
+
+; movq imm32, %rax
+.byte 0x48, 0xc7, 0xc0
+
+; the labeled imm32 value
+spslr_a_ipin0:
+.type spslr_a_ipin0, @object
+.size spslr_a_ipin0, 4
+.long 0x8</code></pre>
+                <p>Conceptually, SPSLR aims to preserve field-offset dependencies during
+                compilation without imposing runtime overhead after patching has completed. Once
+                selfpatch rewrites instruction pin immediates to reflect the selected randomized
+                layout, field accesses execute as ordinary machine instructions using concrete
+                offsets.</p>
+                <p>The current implementation favors implementation simplicity over perfectly
+                zero-cost code generation. Rather than encoding field offsets directly inside
+                memory-access instructions, pinpoint lowers instruction pins into a dedicated
+                offset materialization step followed by the actual access instruction:</p>
+                <pre><code class="language-nasm">mov $field_offset, %rax
+mov (%rdi,%rax,1), %rax</code></pre>
+                <p>This introduces one additional instruction compared to a direct
+                displacement-based field access. The separation keeps instruction pin patch sites
+                simple and stable, because selfpatch only needs to rewrite the immediate bytes of a
+                dedicated materialization instruction rather than reason about
+                architecture-specific addressing forms.</p>
+                <p>A future pinpoint constant-folding pass may eliminate this overhead by folding
+                patched offsets back into surrounding instructions, restoring the conceptual
+                zero-runtime-overhead execution model in which randomized offsets behave as if they
+                had been compiled into the program directly.</p>
+                <h4>Data pins</h4>
+                <p>A <b>data pin</b> (dpin) represents existing storage that already contains one
+                or more target instances in their original layout. Pinpoint discovers such objects
+                during compilation and records their location and structure.</p>
+                <p>Static objects may contain targets directly, arrays of targets, or nested target
+                instances embedded inside larger aggregates. For each discovered target instance,
+                pinpoint records:</p>
+                <ul>
+                    <li>(an alias for) the containing object symbol,</li>
+                    <li>the byte offset of the target instance,</li>
+                    <li>the local target ID,</li>
+                    <li>and structural nesting information.</li>
+                </ul>
+                <p>These descriptors later allow selfpatch to rewrite static storage from the
+                original layout into the randomized layout chosen at runtime.</p>
+                <pre><code class="language-c">struct Outer {
+    int flags;
+    struct Target t;
+};
+
+static struct Outer obj;</code></pre>
+                <p>In this example, pinpoint emits a data pin describing that <code class=
+                "language-c">obj</code> contains a target instance at the offset of <code class=
+                "language-c">Outer::t</code>. Structural nesting information is preserved for later
+                runtime patch ordering.</p>
+                <h4>Compilation-unit metadata</h4>
+                <p>At the end of compilation, pinpoint emits all collected target layouts,
+                instruction pins, and data pins into a textual <code>.spslr</code> metadata file
+                associated with the compilation unit. Target IDs remain local to the compilation
+                unit and are unified later by patchcompile.</p>
+            </section>
+            <section id="patchcompile">
+                <h3>Patchcompile: metadata consolidation</h3>
+                <p><b>patchcompile</b> transforms compilation-unit-local SPSLR metadata into one
+                unified runtime representation. It consumes all <code>.spslr</code> files produced
+                by pinpoint and produces a compact descriptor section that can later be linked into
+                a subject binary.</p>
+                <p>The most important task of patchcompile is constructing a <b>global target
+                namespace</b>. Each compilation unit uses its own local target IDs, so patchcompile
+                compares discovered target layouts and merges compatible targets into one shared
+                runtime representation.</p>
+                <p>Conceptually, several compilation units:</p>
+                <pre><code>foo.c.spslr:
+target 0 = struct Credentials
+
+bar.c.spslr:
+target 0 = struct Credentials</code></pre>
+                <p>become one shared runtime target:</p>
+                <pre><code>global target 4 = struct Credentials</code></pre>
+                <p>Instruction pins and data pins are rewritten to reference this global target
+                namespace.</p>
+                <h4>Instruction pin programs</h4>
+                <p>Patchcompile converts pinpoint instruction pins into a compact runtime
+                representation called an <b>instruction pin program</b>. Rather than storing a
+                single replacement offset, the program describes how the final instruction
+                immediate should be computed after runtime layout randomization.</p>
+                <p>The common case is a simple one-field dependency:</p>
+                <pre><code>patch immediate =
+      randomized_offset(target, field)</code></pre>
+                <p>However, instruction pin programs are intentionally more general than this
+                canonical case. A future implementation may produce ipin instructions whose
+                immediate value constitutes folded expressions that depend on several randomized
+                field offsets. The program abstraction allows arbitrary patch-value computations to
+                be represented without changing the runtime model.</p>
+                <h4>Data pin descriptors</h4>
+                <p>Patchcompile also transforms data pins into runtime descriptors for static
+                storage rewriting. Each descriptor identifies one target instance already present
+                in a subject image.</p>
+                <p>Nested target instances are sorted by <b>nesting level</b>. Embedded targets
+                appear before their containing objects so that rewriting proceeds from inner
+                objects outward.</p>
+                <pre><code class="language-c">struct Outer {
+    int flags;
+    struct Target t;
+};
+
+static struct Outer obj;</code></pre>
+                <p>Here, patchcompile emits a descriptor for <code class="language-c">obj +
+                offsetof(Outer, t)</code>. If nested targets exist, deeper nesting levels appear
+                first.</p>
+                <h4>Runtime descriptor section</h4>
+                <p>The final output of patchcompile is an assembly source file containing SPSLR
+                runtime descriptors. After assembly and linking, the subject binary contains a
+                metadata section describing targets, instruction pins, instruction pin programs,
+                and data pins.</p>
+                <pre><code>[subject]_spslr_section.S
+        ↓
+[subject]_spslr_section.o
+        ↓
+linked into subject image</code></pre>
+            </section>
+            <section id="selfpatch">
+                <h3>Selfpatch: runtime application</h3>
+                <p><b>selfpatch</b> applies SPSLR at runtime. It consumes the runtime descriptor
+                section produced by patchcompile, chooses randomized target layouts, computes new
+                field offsets, rewrites static storage, and patches instruction immediates.</p>
+                <p>Runtime layout randomization is performed per target. For each randomized
+                target, selfpatch computes a new field order while respecting field size,
+                alignment, and fixed-field constraints.</p>
+                <p>The resulting runtime layout becomes authoritative for later patching.
+                Instruction pin programs and data pins both resolve through the same randomized
+                target description.</p>
+                <h4>Public runtime API</h4>
+                <p>The public selfpatch API consists of three entry points: <code class=
+                "language-c">spslr_init()</code>, <code class=
+                "language-c">spslr_selfpatch()</code>, and <code class=
+                "language-c">spslr_patch_module()</code>. Together, these functions separate layout
+                selection from image rewriting.</p>
+                <pre><code class="language-c">struct spslr_status spslr_init(void);
+struct spslr_status spslr_selfpatch(void);
+struct spslr_status spslr_patch_module(const struct spslr_module *m);</code></pre>
+                <p><code class="language-c">spslr_init()</code> initializes the SPSLR runtime and
+                chooses the randomized layouts for the host subject. At this point, the randomized
+                layouts are known to the runtime, but the executable image has not yet been
+                rewritten. Code and static data still refer to the original compile-time
+                layout.</p>
+                <p><code class="language-c">spslr_selfpatch()</code> applies the selected layouts
+                to the host executable. It patches the host's data pins and instruction pins and
+                must be called after <code class="language-c">spslr_init()</code>, but before
+                ordinary program execution begins to rely on randomized target objects.</p>
+                <p>The intended startup sequence is:</p>
+                <pre><code class="language-c">int main(void) {
+    struct spslr_status st;
+
+    st = spslr_init();
+    if (st.error != SPSLR_OK)
+        return 1;
+
+    st = spslr_selfpatch();
+    if (st.error != SPSLR_OK)
+        return 1;
+
+    /* Normal program execution starts here. */
+    return real_main();
+}</code></pre>
+                <p>Under contextual constraints, the image selfpatch step may be deferred.
+                Dynamically created target instances may exist before <code class=
+                "language-c">spslr_selfpatch()</code> only if they are fully dead before the
+                patching boundary. They must not be used after patching, because stack and heap
+                instances are not represented by data pins and are therefore not transformed into
+                the randomized layout.</p>
+                <pre><code class="language-c">int main(void) {
+    spslr_init();
+
+    {
+        /* Ok: this instance does not cross the patching boundary. */
+        struct target temporary_target;
+        temporary_target.field = 42;
+    }
+
+    /* Ok: this instance does not cross the patching boundary. */
+    struct target *heap_target = malloc(sizeof(*heap_target));
+    heap_target-&gt;field = 42;
+    free(heap_target);
+
+    spslr_selfpatch();
+
+    /* Ok: new dynamic target instances are constructed after patching. */
+    struct target patched_stack_target;
+    patched_stack_target.field = 42;
+}</code></pre>
+                <pre><code class="language-c">int main(void) {
+    spslr_init();
+
+    /* Bad: this target instance survives across the patching boundary. */
+    struct target stack_target;
+    stack_target.field = 42;
+
+    struct target *heap_target = malloc(sizeof(*heap_target));
+    heap_target-&gt;field = 42;
+
+    spslr_selfpatch();
+
+    /*
+     * Bad: neither instance was shuffled by selfpatch, so these accesses
+     * interpret old-layout storage using the new field offsets.
+     */
+    int a = stack_target.field;
+    int b = heap_target-&gt;field;
+
+    free(heap_target);
+}</code></pre>
+                <p>Static target instances are different. Because they are part of the program
+                image, SPSLR rewrites them during selfpatch through data pin patching. Reads and
+                writes performed before and after patching are therefore permitted, provided that
+                no pointers materialized from compile-time field offsets are preserved across the
+                patching boundary.</p>
+                <pre><code class="language-c">static struct target obj;
+
+int main(void) {
+    spslr_init();
+
+    /* Ok: static target instances may be accessed before patching. */
+    obj.fieldA = 42;
+
+    /* Ok: pointer usage does not cross patching boundary. */
+    int *fieldB_ptr = &amp;obj.fieldB;
+    *fieldB_ptr = 41;
+
+    spslr_selfpatch();
+
+    /* Bad: fieldB_ptr still points to the field's pre-patch location. */
+    *fieldB_ptr = 42;
+
+    /* Ok: pointer assignment now goes through patched code and randomized offsets. */
+    fieldB_ptr = &amp;obj.fieldB;
+    *fieldB_ptr = 42;
+}</code></pre>
+                <p><code class="language-c">spslr_patch_module()</code> patches a separately loaded
+                module against the layouts already selected by the host. Modules do not choose
+                independent layouts for shared SPSLR targets. Instead, a module provides its local
+                SPSLR descriptor symbols, and selfpatch rewrites that module's data pins and
+                instruction pins to match the host layout.</p>
+                <p>A module must be patched after it has been loaded and relocated, but before any
+                SPSLR-instrumented code or randomized static target objects from that module are
+                used.</p>
+                <p>All three functions return a <code class="language-c">struct
+                spslr_status</code>. The <code class="language-c">error</code> field describes the
+                immediate failure reason, while the <code class="language-c">viability</code> field
+                indicates whether the affected executable or module may continue running safely. If
+                patching fails with a non-viable status, the image may have been partially modified
+                and must not continue execution.</p>
+                <h4>Instruction pin patching</h4>
+                <p>Instruction pin patching updates machine instructions whose immediates encode
+                original structure offsets. For each instruction pin, selfpatch evaluates the
+                associated instruction pin program and overwrites the immediate bytes with the
+                newly computed offset.</p>
+                <pre><code class="language-nasm">before:
+mov $0x18, %rax
+mov (%rdi,%rax,1), %rax
+
+after:
+mov $0x30, %rax
+mov (%rdi,%rax,1), %rax</code></pre>
+                <p>Only the immediate field changes. The surrounding instruction bytes remain
+                fixed.</p>
+                <p>Because instruction pins commonly reside in executable <code class=
+                "language-nasm">.text</code> mappings, selfpatch must temporarily obtain write
+                permission for the corresponding memory region before applying the patch and later
+                restore the original protection state.</p>
+                <h4>Data pin patching</h4>
+                <p>Data pin patching rewrites existing static storage from original layout into the
+                randomized runtime layout. A temporary buffer is used while copying fields so
+                overlapping source and destination regions remain safe.</p>
+                <p>Depending on placement, data pins may also require writable access to memory
+                that is normally read-only, for example statically initialized objects placed in
+                read-only sections. Selfpatch therefore requires sufficient permissions to
+                temporarily modify the corresponding storage.</p>
+                <h4>Host and module subjects</h4>
+                <p>SPSLR distinguishes between a <b>host subject</b> and <b>module
+                subjects</b>.</p>
+                <p>The host subject owns the SPSLR runtime implementation. It contains the
+                selfpatch code, initializes runtime randomization, owns the global target
+                namespace, and stores the randomized target layouts used for patching.</p>
+                <p>Module subjects are intentionally smaller. Rather than carrying their own target
+                descriptions or randomization implementation, modules only contain the reduced
+                metadata required to patch their own image, such as instruction pins, corresponding
+                instruction pin programs, and data pins. Their pins refer to global targets already
+                owned by the host subject.</p>
+                <pre><code>host subject
+    ├── selfpatch runtime
+    ├── global targets
+    ├── randomized layouts
+    ├── host-image data pins
+    ├── host-image instruction pins
+    └── host-image instruction pin programs
+
+module subject
+    ├── module-image data pins
+    ├── module-image instruction pins
+    └── module-image instruction pin programs</code></pre>
+                <p>When a module subject is loaded, selfpatch reuses the already initialized host
+                state and applies SPSLR patching using the host subject's randomized layouts.</p>
+            </section>
+            <section id="limitations">
+                <h2>Limitations and assumptions</h2>
+                <p>SPSLR is currently a research prototype and operates under explicit assumptions
+                about compiler behavior, runtime patchability, and layout ownership. These
+                assumptions define the correctness boundary of the implementation and document the
+                cases that currently require exclusion or additional care.</p>
+                <h3>Compiler and code-generation assumptions</h3>
+                <ul>
+                    <li>Field accesses must remain observable and transformable by <b>pinpoint</b>.
+                    Code generation patterns not recognized by pinpoint cannot be randomized
+                    safely.</li>
+                    <li>Inline assembly must not encode assumptions about randomized target layouts
+                    unless explicitly excluded from SPSLR or manually synchronized with runtime
+                    patching.</li>
+                    <li>The current implementation assumes predictable instruction pin lowering so
+                    that runtime patch sites remain identifiable and patchable.</li>
+                </ul>
+                <h3>Current pinpoint implementation limitations</h3>
+                <p>The current pinpoint implementation intentionally preserves randomized
+                field-offset dependencies until runtime patching. As a consequence, randomized
+                field offsets cease to behave as compile-time knowledge in some contexts. Language
+                constructs that require compile-time field offsets may therefore become invalid
+                under SPSLR instrumentation.</p>
+                <p>In particular, static initialization involving pointers to randomized fields is
+                currently unsupported:</p>
+                <pre><code class="language-c">struct target obj;
+
+/* Fails to compile under SPSLR instrumentation (expression is non-const). */
+int *field_ptr = &amp;obj.field;</code></pre>
+                <p>Fields that trigger compiler errors because of this restriction should currently
+                be marked with <code class="language-c">__attribute__((spslr_field_fixed))</code>.
+                Pinpoint's separation transformations are not applied to fixed field references
+                which thus do not lose their compile-time evaluability.</p>
+                <h3>Runtime and patching assumptions</h3>
+                <ul>
+                    <li>SPSLR assumes writable access can temporarily be obtained for executable
+                    and read-only mappings that contain instruction pins or static target
+                    instances.</li>
+                    <li>Dynamically allocated target instances must not survive across the patching
+                    boundary. Stack and heap target instances are not rewritten by selfpatch and
+                    must therefore either be destroyed before patching or only be created after
+                    selfpatching has completed.</li>
+                    <li>Pointers materialized from compile-time field offsets must not survive
+                    across the patching boundary. Addresses into target objects may become invalid
+                    after randomized layouts are applied.</li>
+                </ul>
+                <h3>Layout and ABI assumptions</h3>
+                <ul>
+                    <li>Layout-sensitive language constructs such as bitfields, compiler-specific
+                    packing behavior, or unusual layout rules may require exclusion from
+                    SPSLR.</li>
+                    <li>Externally visible binary interfaces that expose randomized target layouts
+                    require special care. Shared ABI structures may require fixed fields or
+                    exclusion from layout randomization.</li>
+                    <li>Targets shared across host and module subjects are assumed to describe
+                    compatible semantic layouts so patchcompile can unify them into one global
+                    runtime target namespace.</li>
+                </ul>
+                <p>These limitations are intentional constraints of the current prototype and
+                document the assumptions under which SPSLR remains correct.</p>
+            </section>
+        </article>
+    </main>
+    <footer class="site-footer">
+        <span>SPSLR documentation</span> <a href="https://github.com/YJN-Systems/Selfpatch-SLR"
+        data-external="">SPSLR Repository</a>
+    </footer>
+</body>
+</html>

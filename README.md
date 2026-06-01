@@ -127,6 +127,10 @@ Use the pinpoint GCC plugin to compile your program sources.
 |---|---|
 | `out=<file>` | Output metadata file |
 | `verbose` | Enable verbose logging |
+| `metadir=<dir>` | Legacy mode: metadata output directory |
+| `srcroot=<dir>` | Legacy mode: source-tree root used to derive source-relative metadata paths |
+
+`out=<file>` is the preferred explicit output mode. For build systems where passing a per-translation-unit output path is inconvenient, `pinpoint` also supports the legacy `metadir=<dir>` and `srcroot=<dir>` arguments. In this mode, the plugin derives the output path from the compiled source file: a source file `<srcroot>/path/to/file.c` emits metadata to `<metadir>/path/to/file.c.spslr`. Use either `out=<file>` or both `metadir=<dir>` and `srcroot=<dir>`.
 
 ### Example
 

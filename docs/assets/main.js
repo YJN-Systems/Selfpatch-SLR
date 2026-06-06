@@ -126,7 +126,7 @@ int main(void)
     text: 'Compiled and assembled object for a.c. Instruction immediates and static target instances that need patching are marked by symbols. For example, the label spslr_a_ipin0 marks the immediate offset bytes inside the mov instruction responsible for loading A.y.',
     code:
 `read_a:
-  mov $(spslr_a_ipin0: 0x10), %rax ; The label marks the immediate bytes
+  mov $(spslr_a_ipin0: 0x08), %rax ; The label marks the immediate bytes
   mov (%rdi,%rax,1), %rax
   ret`,
     codeClass: 'language-nasm'
@@ -278,7 +278,7 @@ int32_t module_read(struct A *a)
   mov $(spslr_module_ipin0: 0x00), %rax ; The label marks the immediate bytes
   mov (%rdi,%rax,1), %rax
   ret`,
-    codeClass: 'language-bash'
+    codeClass: 'language-nasm'
   },
 
   'module-spslr': {

@@ -54,14 +54,16 @@ static bool global_target_cmp(const TARGET &a, const TARGET &b)
 	if (a.name != b.name)
 		return false;
 
-	if (a.size != b.size || !global_target_field_cmp(a, b)) {
-		patchcompile_warn(
-			"got different definitions of '%s' -> detached randomization",
-			a.name.c_str());
-		return false;
-	}
+	return a.size == b.size && global_target_field_cmp(a, b);
+}
 
-	return true;
+static bool global_target_name_exists(const TARGET &target)
+{
+	for (const auto &[guid, gtarget] : targets) {
+		if (gtarget.name == target.name)
+			return true;
+	}
+	return false;
 }
 
 /*
@@ -77,6 +79,11 @@ static std::size_t accumulate_global_target(TARGET &&target, bool &was_new)
 		if (global_target_cmp(gtarget, target))
 			return guid;
 	}
+
+	if (global_target_name_exists(target))
+		patchcompile_warn(
+			"got different definitions of '%s' -> detached randomization",
+			target.name.c_str());
 
 	was_new = true;
 
@@ -207,6 +214,8 @@ static bool accumulate_file(const fs::path &path, bool no_new_targets)
 						fline.c_str());
 					return false;
 				}
+
+				field.idx = static_cast<std::size_t>(-1);
 
 				// Note -> could do sanity checks here
 

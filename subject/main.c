@@ -37,6 +37,11 @@ static struct task_struct kworker_task = {
 
 static LIST_HEAD(system_task_list);
 
+static struct task_struct copy_init_task()
+{
+	return init_task;
+}
+
 static const char *state_name(enum task_state state)
 {
 	switch (state) {
@@ -294,6 +299,10 @@ int main(int argc, char **argv)
 	puts("\n== module report ==");
 	if (run_module_report(argv[1], &system_task_list) < 0)
 		return EXIT_FAILURE;
+
+	puts("\n== init_task rvalue field access ==");
+	printf("copy_init_task().comm=\"%s\" (should be \"init\")\n",
+	       copy_init_task().comm);
 
 	return EXIT_SUCCESS;
 }

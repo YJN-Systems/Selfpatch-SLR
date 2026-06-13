@@ -1,4 +1,4 @@
-add_library(pinpoint SHARED pinpoint.cpp)
+add_library(pinpoint SHARED pinpoint.cpp gc_preserve.cpp)
 
 set_target_properties(pinpoint PROPERTIES PREFIX "")
 target_compile_definitions(pinpoint PRIVATE _GNU_SOURCE)

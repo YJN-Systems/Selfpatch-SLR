@@ -5,5 +5,6 @@
 
 #include <tree.h>
 #include <tree-pass.h>
+#include <c-tree.h>
 
 #endif

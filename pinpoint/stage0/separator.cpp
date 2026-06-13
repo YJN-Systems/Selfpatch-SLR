@@ -1,8 +1,14 @@
 #include <stage0.h>
 #include <pinpoint_config.h>
 #include <pinpoint_error.h>
+#include <gc_preserve.h>
 
 static tree separator_decl = NULL_TREE;
+
+PINPOINT_GC_PRESERVE_CALLBACK()
+{
+	PINPOINT_GC_MARK_TREE(separator_decl);
+}
 
 /*
  * Stage0 separators are compiler-internal marker calls, not runtime calls.
@@ -30,7 +36,7 @@ static tree make_separator_decl()
 	DECL_ARTIFICIAL(tmp_decl) = 1;
 
 	/* Prevent VOP problems later when removing calls (VOPs mark memory
-	   side-effects, which these calls have none of anyways */
+	   side-effects, which these calls have none of anyways) */
 	DECL_PURE_P(tmp_decl) = 1;
 	DECL_IS_NOVOPS(tmp_decl) = 1;
 

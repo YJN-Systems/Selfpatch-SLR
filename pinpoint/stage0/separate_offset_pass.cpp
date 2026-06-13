@@ -79,8 +79,13 @@ static bool access_chain(tree ref, AccessChain &chain)
 	}
 
 	default:
+		/*
+		 * Access chain construction needs to reach all COMPONENT_REFs. Further
+		 * implementation may be required to cover all possible AST scenarios.
+		 */
 		if (tree_contains_component_ref(ref))
 			return false;
+
 		chain.base = ref;
 		return true;
 	}
@@ -160,16 +165,20 @@ static tree separate_offset_chain_maybe(tree ref, gimple_stmt_iterator *gsi)
 			}
 
 			tree ptr_tmp = create_tmp_var(field_ptr_type, NULL);
-			gimple *ptr_assign =
-				gimple_build_assign(ptr_tmp, field_ptr);
-			gsi_insert_before(gsi, ptr_assign, GSI_SAME_STMT);
 
-			// Dereference constructed pointer expression
+			tree ptr_val = force_gimple_operand_gsi(
+				gsi, field_ptr,
+				true, // require simple result
+				ptr_tmp, // target temp
+				true, // insert before current stmt
+				GSI_SAME_STMT);
 
-			tree offset0 = fold_convert(TREE_TYPE(ptr_tmp),
+			tree offset0 = fold_convert(TREE_TYPE(ptr_val),
 						    build_int_cst(sizetype, 0));
-			cur_expr = build2(MEM_REF, TREE_TYPE(step.t), ptr_tmp,
+
+			cur_expr = build2(MEM_REF, TREE_TYPE(step.t), ptr_val,
 					  offset0);
+
 			continue;
 		}
 

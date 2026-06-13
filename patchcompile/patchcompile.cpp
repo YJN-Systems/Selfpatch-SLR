@@ -53,8 +53,8 @@ int main(int argc, char **argv)
 
 	patchcompile_verbose_enabled = false;
 
-	while ((c = getopt_long(argc, argv, "h:o:", long_options,
-				&option_index)) == 0) {
+	while ((c = getopt_long(argc, argv, "", long_options, &option_index)) !=
+	       -1) {
 		const option &opt = long_options[option_index];
 		std::string optname{ opt.name };
 
@@ -65,8 +65,8 @@ int main(int argc, char **argv)
 				"Options:\n"
 				"  --help\n"
 				"  --verbose\n"
-				"  --read-targets=<file>\n"
-				"  --emit-targets=<file>\n"
+				"  --load-targets=<file>\n"
+				"  --dump-targets=<file>\n"
 				"  --no-new-targets\n"
 				"  --module\n");
 			return 0;
@@ -110,6 +110,17 @@ int main(int argc, char **argv)
 	 */
 	if (opts.no_new_targets && opts.load_targets_file.empty()) {
 		patchcompile_error("--no-new-targets requires --load-targets");
+		return 1;
+	}
+
+	/*
+	 * Modules should always be based on a host target map and not add any new
+	 * targets.
+	 */
+	if ((opts.load_targets_file.empty() || !opts.no_new_targets) &&
+	    opts.is_module) {
+		patchcompile_error(
+			"--module requires --load-targets and --no-new-targets");
 		return 1;
 	}
 

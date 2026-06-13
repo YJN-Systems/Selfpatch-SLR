@@ -8,6 +8,7 @@
 #include <gimplify.h>
 #include <gimple-iterator.h>
 #include <gimple-pretty-print.h>
+#include <gimplify-me.h>
 #include <ssa.h>
 
 #endif

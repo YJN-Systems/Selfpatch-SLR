@@ -18,7 +18,7 @@ static tree make_asm_operand(const char *constraint_text, tree operand_tree)
 {
 	tree constraint_str =
 		build_string(strlen(constraint_text) + 1, constraint_text);
-	tree inner_list = build_tree_list(integer_zero_node, constraint_str);
+	tree inner_list = build_tree_list(NULL_TREE, constraint_str);
 	tree outer_list = build_tree_list(inner_list, operand_tree);
 	return outer_list;
 }
@@ -100,7 +100,7 @@ static void pin_assemble_maybe(function *fn, gimple_stmt_iterator *gsi)
 	gimple *replacement =
 		make_stage1_pin(gimple_call_lhs(stmt), target, offset);
 	if (!replacement)
-		pinpoint_fatal();
+		pinpoint_fatal("failed to construct stage 1 pin");
 
 	gsi_replace(gsi, replacement, true);
 	pin_update_ssa_def(fn, stmt, replacement);

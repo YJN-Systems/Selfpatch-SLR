@@ -8,6 +8,7 @@
 #include <stage2.h>
 #include <final.h>
 
+#include <gc_preserve.h>
 #include <pinpoint_error.h>
 
 int plugin_is_GPL_compatible;
@@ -96,6 +97,8 @@ int plugin_init(struct plugin_name_args *plugin_info,
 			  on_preserve_component_ref, NULL);
 	register_callback(plugin_info->base_name, PLUGIN_FINISH_DECL,
 			  on_finish_decl, NULL);
+	register_callback(plugin_info->base_name, PLUGIN_GGC_MARKING,
+			  pinpoint_gc_preserve, NULL);
 
 	struct register_pass_info separate_offset_pass_info;
 	separate_offset_pass_info.pass = new separate_offset_pass(nullptr);

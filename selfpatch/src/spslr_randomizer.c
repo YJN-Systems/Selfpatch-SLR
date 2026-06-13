@@ -428,6 +428,48 @@ static void __init do_swap(spslr_u32 target, spslr_u32 origin_idx,
 	}
 
 	/*
+	 * The selected destination may not overlap any other field. It may be an
+	 * empty padding gap, or it may partially overlap the origin field itself
+	 * when the field slides into adjacent padding.
+	 *
+	 * In either case the loop above never displaces another field and
+	 * `pulled` remains zero. We still need to update the origin field's
+	 * offset and reinsert it at the correct position in final-offset order so
+	 * that the field array remains sorted.
+	 */
+	if (!pulled) {
+		struct Field origin = *get_rfield(target, origin_idx);
+		spslr_u32 insert_idx = t->fieldcnt;
+
+		for (spslr_u32 it = 0; it < t->fieldcnt; it++) {
+			if (it == origin_idx)
+				continue;
+
+			if (get_rfield(target, it)->offset >= new_offset) {
+				insert_idx = it;
+				break;
+			}
+		}
+
+		if (insert_idx > origin_idx)
+			insert_idx--;
+
+		if (origin_idx < insert_idx) {
+			for (spslr_u32 it = origin_idx + 1; it <= insert_idx;
+			     it++)
+				*get_rfield(target, it - 1) =
+					*get_rfield(target, it);
+		} else if (origin_idx > insert_idx) {
+			for (spslr_u32 it = origin_idx; it > insert_idx; it--)
+				*get_rfield(target, it) =
+					*get_rfield(target, it - 1);
+		}
+
+		*get_rfield(target, insert_idx) = origin;
+		get_rfield(target, insert_idx)->offset = new_offset;
+	}
+
+	/*
 	 * Rebuild original->final mapping for this target.
 	 */
 	for (spslr_u32 final_idx = 0; final_idx < t->fieldcnt; final_idx++) {

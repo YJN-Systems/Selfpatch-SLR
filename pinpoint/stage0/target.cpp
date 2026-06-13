@@ -5,6 +5,8 @@
 #include <safe-attribs.h>
 
 #include <pinpoint_config.h>
+#include <pinpoint_error.h>
+#include <gc_preserve.h>
 
 /*
  * TargetType is the compiler-side model of an SPSLR-randomized record type.
@@ -109,6 +111,17 @@ std::size_t TargetType::size() const
 		return 0;
 
 	return m_size;
+}
+
+PINPOINT_GC_PRESERVE_CALLBACK()
+{
+	for (const auto &[uid, target] : targets)
+		target.gc_preserve();
+}
+
+void TargetType::gc_preserve() const
+{
+	PINPOINT_GC_MARK_TREE(m_main_variant);
 }
 
 void TargetType::add(tree t)
@@ -357,8 +370,15 @@ static bool field_map_add(std::map<std::size_t, TargetType::Field> &map,
 		tmp_field.flags |= (existing_field.flags |
 				    TargetType::Field::FLAG_DANGEROUS);
 		tmp_field.offset = combined_offset;
-		tmp_field.alignment =
-			std::min(tmp_field.alignment, existing_field.alignment);
+
+		std::size_t required_alignment =
+			std::max(tmp_field.alignment, existing_field.alignment);
+
+		if (tmp_field.offset % required_alignment != 0)
+			pinpoint_fatal(
+				"encountered invalid overlapping fields");
+
+		tmp_field.alignment = required_alignment;
 		tmp_field.size = combined_size;
 
 		// Erase overlapping member

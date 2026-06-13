@@ -51,6 +51,7 @@ class TargetType {
 	const Field *field(std::size_t off, bool exact = true) const;
 	UID uid() const;
 	std::size_t size() const;
+	void gc_preserve() const;
 
 	static void add(tree t);
 	static std::size_t count();

@@ -204,7 +204,17 @@ static int run_module_report(const char *module_path,
 		return -1;
 	}
 
-	struct spslr_status status = spslr_patch_module(&mod);
+	unsigned long reorder_buffer_size = spslr_reorder_buffer_size();
+	void *reorder_buffer = malloc(reorder_buffer_size);
+	if (!reorder_buffer) {
+		fprintf(stderr, "failed to allocate module reorder buffer\n");
+		dlclose(handle);
+		return -1;
+	}
+
+	struct spslr_status status = spslr_patch_module(&mod, reorder_buffer);
+	free(reorder_buffer);
+
 	if (status.error != SPSLR_OK) {
 		fprintf(stderr, "failed to patch module\n");
 		dlclose(handle);

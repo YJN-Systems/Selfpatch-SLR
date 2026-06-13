@@ -115,6 +115,11 @@ void *__init spslr_env_malloc(spslr_u32 n)
 	return malloc(n);
 }
 
+void __init spslr_env_free(void *ptr)
+{
+	free(ptr);
+}
+
 int spslr_env_poke_data(void *dst, const void *src, spslr_u32 n)
 {
 	return spslr_env_poke_safe(dst, src, n);

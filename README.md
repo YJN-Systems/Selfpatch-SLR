@@ -14,7 +14,7 @@ SPSLR is a **research prototype** intended for experimentation and evaluation.
 
 Current support:
 
-- x86_64 Linux
+- x86\_64 Linux
 - GCC 16 (custom toolchain)
 - C projects
 
@@ -24,7 +24,7 @@ Current support:
 
 ### Platform
 
-- x86_64 Linux
+- x86\_64 Linux
 
 ### Toolchain
 
@@ -206,14 +206,16 @@ To access the runtime SPSLR API, include the selfpatch header:
 #include <spslr.h>
 ```
 
-The three public entry points are:
+The four public entry points are:
 
 ```c
 struct spslr_status spslr_init(void);
 struct spslr_status spslr_selfpatch(void);
 struct spslr_status spslr_patch_module(
-    const struct spslr_module *m
+    const struct spslr_module *m,
+    void *reorder_buffer;
 );
+unsigned long spslr_reorder_buffer_size(void);
 ```
 
 ### `spslr_init()`
@@ -234,9 +236,9 @@ struct spslr_status st = spslr_selfpatch();
 if (st.error != SPSLR_OK) err;
 ```
 
-### `spslr_patch_module()`
+### `spslr_patch_module() and spslr_reorder_buffer_size()`
 
-Patches a shared module on load with the structure layouts owned by the main executable. It takes a collection of pointers to the relevant SPSLR runtime information constructs in the module, which can be located through the symbols defined in the selfpatch header. Patching a module that has not yet had its relocations applied is invalid (only relevant to custom module loading mechanisms).
+Patches a shared module on load with the structure layouts owned by the main executable. It takes a collection of pointers to the relevant SPSLR runtime information constructs in the module, which can be located through the symbols defined in the selfpatch header. Patching a module that has not yet had its relocations applied is invalid (only relevant to custom module loading mechanisms). Additionally, a temporary buffer of at least `spslr_reorder_buffer_size()` must be supplied and may be freed after module patching completes.
 
 ```c
 #include <dlfcn.h>
@@ -259,8 +261,10 @@ int patch_loaded_module(void *handle)
             dlsym(handle, SPSLR_MODULE_SYM_DPINS)
     };
 
+    void *reorder_buffer = malloc(spslr_reorder_buffer_size());
+
     struct spslr_status st =
-        spslr_patch_module(&m);
+        spslr_patch_module(&m, reorder_buffer);
 
     return st.error != SPSLR_OK;
 }

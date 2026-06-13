@@ -44,10 +44,14 @@ struct spslr_module {
  * spslr_init() creates randomized layouts.
  * spslr_selfpatch() patches the main executable.
  * spslr_patch_module() patches module-local metadata using existing layouts.
+ * spslr_reorder_buffer_size() returns the minimum required size of the
+ *     reorder buffer passed to spslr_patch_module()
  */
 
 struct spslr_status spslr_init(void);
 struct spslr_status spslr_selfpatch(void);
-struct spslr_status spslr_patch_module(const struct spslr_module *m);
+struct spslr_status spslr_patch_module(const struct spslr_module *m,
+				       void *reorder_buffer);
+unsigned long spslr_reorder_buffer_size(void);
 
 #endif

@@ -14,20 +14,18 @@
 
 #define SPSLR_SANITY_CHECK
 
-static int spslr_patch_dpins(const struct spslr_dpin *dpins, spslr_u32 cnt);
-static int spslr_patch_dpin(void *addr, spslr_u32 target);
+static int spslr_patch_dpins(const struct spslr_dpin *dpins, spslr_u32 cnt,
+			     void *reorder_buffer);
+static int spslr_patch_dpin(void *addr, spslr_u32 target, void *reorder_buffer);
 static int spslr_patch_ipins(const struct spslr_ipin *ipins, spslr_u32 cnt,
 			     const struct spslr_ipin_op *ipin_ops,
 			     spslr_u32 op_cnt);
 
+spslr_u32 spslr_largest_target(void);
 static int reorder_object(void *dst, const void *src, spslr_u32 target);
 static int spslr_calculate_ipin_value(const struct spslr_ipin_op *ipin_ops,
 				      spslr_u32 op_cnt, spslr_u32 start,
 				      spslr_s64 *res);
-
-static void *reorder_buffer = NULL;
-
-static int allocate_reorder_buffer(void);
 
 static int initialized = 0, patched = 0;
 static enum spslr_viability viable = SPSLR_VIABLE;
@@ -75,11 +73,6 @@ struct spslr_status __init spslr_init(void)
 	}
 #endif
 
-	if (allocate_reorder_buffer() < 0)
-		return (struct spslr_status){
-			.viability = viable, .error = SPSLR_ERROR_REORDER_BUFFER
-		};
-
 	initialized = 1;
 	return (struct spslr_status){ .viability = viable, .error = SPSLR_OK };
 }
@@ -93,44 +86,81 @@ struct spslr_status __init spslr_init(void)
 
 struct spslr_status __init spslr_selfpatch(void)
 {
-	if (patched)
-		return (struct spslr_status){
-			.viability = viable,
-			.error = SPSLR_ERROR_ALREADY_PATCHED
-		};
+	enum spslr_error err = SPSLR_OK;
+	void *reorder_buffer = NULL;
 
-	if (!initialized)
-		return (struct spslr_status){
-			.viability = viable, .error = SPSLR_ERROR_UNINITIALIZED
-		};
+	if (patched) {
+		err = SPSLR_ERROR_ALREADY_PATCHED;
+		goto finish;
+	}
+
+	if (!initialized) {
+		err = SPSLR_ERROR_UNINITIALIZED;
+		goto finish;
+	}
 
 	viable = SPSLR_NONVIABLE;
 
-	if (spslr_patch_dpins(spslr_dpins, spslr_dpin_cnt) < 0)
-		return (struct spslr_status){
-			.viability = viable, .error = SPSLR_ERROR_PATCH_DPINS
-		};
+	reorder_buffer = spslr_env_malloc(spslr_largest_target());
+	if (!reorder_buffer) {
+		err = SPSLR_ERROR_REORDER_BUFFER;
+		goto finish;
+	}
+
+	if (spslr_patch_dpins(spslr_dpins, spslr_dpin_cnt, reorder_buffer) <
+	    0) {
+		err = SPSLR_ERROR_PATCH_DPINS;
+		goto finish;
+	}
 
 	if (spslr_patch_ipins(spslr_ipins, spslr_ipin_cnt, spslr_ipin_ops,
-			      spslr_ipin_op_cnt) < 0)
-		return (struct spslr_status){
-			.viability = viable, .error = SPSLR_ERROR_PATCH_IPINS
-		};
+			      spslr_ipin_op_cnt) < 0) {
+		err = SPSLR_ERROR_PATCH_IPINS;
+		goto finish;
+	}
 
 	viable = SPSLR_VIABLE;
-
 	patched = 1;
-	return (struct spslr_status){ .viability = viable, .error = SPSLR_OK };
+
+finish:
+	if (reorder_buffer)
+		spslr_env_free(reorder_buffer);
+
+	return (struct spslr_status){ .viability = viable, .error = err };
+}
+
+/*
+ * Returns the required minimum size for the reorder buffer passed to
+ * spslr_patch_module. Future implementations may instead provide a
+ * spslr_module_largest_target function to optimize memory usage.
+ */
+
+spslr_u32 spslr_largest_target(void)
+{
+	spslr_u32 max_target_size = 0;
+	for (spslr_u32 i = 0; i < spslr_target_cnt; i++) {
+		if (spslr_targets[i].size > max_target_size)
+			max_target_size = spslr_targets[i].size;
+	}
+
+	return max_target_size;
+}
+
+unsigned long spslr_reorder_buffer_size(void)
+{
+	return (unsigned long)spslr_largest_target();
 }
 
 /*
  * Patch metadata belonging to a separately loaded module.
  *
  * Modules reuse the target randomization state created by the main executable;
- * they contribute only their own instruction and data patch sites.
+ * they contribute only their own instruction and data patch sites. The caller
+ * must provide a reorder buffer of at least spslr_reorder_buffer_size() bytes.
  */
 
-struct spslr_status spslr_patch_module(const struct spslr_module *m)
+struct spslr_status spslr_patch_module(const struct spslr_module *m,
+				       void *reorder_buffer)
 {
 	if (!initialized)
 		return (struct spslr_status){
@@ -155,7 +185,8 @@ struct spslr_status spslr_patch_module(const struct spslr_module *m)
 	const struct spslr_dpin *module_dpins =
 		(const struct spslr_dpin *)m->dpins;
 
-	if (spslr_patch_dpins(module_dpins, module_dpin_cnt) < 0)
+	if (spslr_patch_dpins(module_dpins, module_dpin_cnt, reorder_buffer) <
+	    0)
 		return (struct spslr_status){ .viability = SPSLR_NONVIABLE,
 					      .error =
 						      SPSLR_ERROR_PATCH_DPINS };
@@ -170,29 +201,13 @@ struct spslr_status spslr_patch_module(const struct spslr_module *m)
 				      .error = SPSLR_OK };
 }
 
-static int __init allocate_reorder_buffer(void)
-{
-	if (reorder_buffer)
-		return 0;
-
-	spslr_u32 max_target_size = 0;
-	for (spslr_u32 i = 0; i < spslr_target_cnt; i++) {
-		if (spslr_targets[i].size > max_target_size)
-			max_target_size = spslr_targets[i].size;
-	}
-
-	reorder_buffer = spslr_env_malloc(max_target_size);
-	if (!reorder_buffer)
-		return -1;
-
-	return 0;
-}
-
-static int spslr_patch_dpins(const struct spslr_dpin *dpins, spslr_u32 cnt)
+static int spslr_patch_dpins(const struct spslr_dpin *dpins, spslr_u32 cnt,
+			     void *reorder_buffer)
 {
 	for (spslr_u32 dpidx = 0; dpidx < cnt; dpidx++) {
 		const struct spslr_dpin *dp = &dpins[dpidx];
-		if (spslr_patch_dpin((void *)dp->addr, dp->target) < 0)
+		if (spslr_patch_dpin((void *)dp->addr, dp->target,
+				     reorder_buffer) < 0)
 			return -1;
 	}
 
@@ -237,12 +252,15 @@ static int reorder_object(void *dst, const void *src, spslr_u32 target)
  * converts that storage in-place to the target's randomized layout.
  */
 
-static int spslr_patch_dpin(void *addr, spslr_u32 target)
+static int spslr_patch_dpin(void *addr, spslr_u32 target, void *reorder_buffer)
 {
 	if (target >= spslr_target_cnt)
 		return -1;
 
 	const struct spslr_target *t = &spslr_targets[target];
+
+	if (t->size > 0 && !reorder_buffer)
+		return -1;
 
 	spslr_env_memset(reorder_buffer, 0, t->size);
 

@@ -545,14 +545,16 @@ linked into subject image</code></pre>
                 Instruction pin programs and data pins both resolve through the same randomized
                 target description.</p>
                 <h4>Public runtime API</h4>
-                <p>The public selfpatch API consists of three entry points: <code class=
+                <p>The public selfpatch API consists of four entry points: <code class=
                 "language-c">spslr_init()</code>, <code class=
-                "language-c">spslr_selfpatch()</code>, and <code class=
-                "language-c">spslr_patch_module()</code>. Together, these functions separate layout
-                selection from image rewriting.</p>
+                "language-c">spslr_selfpatch()</code>, <code class=
+                "language-c">spslr_patch_module()</code>, and <code class=
+                "language-c">spslr_reorder_buffer_size()</code>. Together, these functions separate
+                layout selection from image rewriting.</p>
                 <pre><code class="language-c">struct spslr_status spslr_init(void);
 struct spslr_status spslr_selfpatch(void);
-struct spslr_status spslr_patch_module(const struct spslr_module *m);</code></pre>
+struct spslr_status spslr_patch_module(const struct spslr_module *m, void *reorder_buffer);
+unsigned long spslr_reorder_buffer_size(void);</code></pre>
                 <p><code class="language-c">spslr_init()</code> initializes the SPSLR runtime and
                 chooses the randomized layouts for the host subject. At this point, the randomized
                 layouts are known to the runtime, but the executable image has not yet been
@@ -654,11 +656,13 @@ int main(void) {
                 module against the layouts already selected by the host. Modules do not choose
                 independent layouts for shared SPSLR targets. Instead, a module provides its local
                 SPSLR descriptor symbols, and selfpatch rewrites that module's data pins and
-                instruction pins to match the host layout.</p>
+                instruction pins to match the host layout. Patching modules requires the caller to
+                provide a temporary buffer of at least <code class=
+                "language-c">spslr_reorder_buffer_size()</code> bytes.</p>
                 <p>A module must be patched after it has been loaded and relocated, but before any
                 SPSLR-instrumented code or randomized static target objects from that module are
                 used.</p>
-                <p>All three functions return a <code class="language-c">struct
+                <p>The first three functions return a <code class="language-c">struct
                 spslr_status</code>. The <code class="language-c">error</code> field describes the
                 immediate failure reason, while the <code class="language-c">viability</code> field
                 indicates whether the affected executable or module may continue running safely. If

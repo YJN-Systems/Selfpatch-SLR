@@ -33,11 +33,12 @@ int spslr_env_poke_text_8(void *dst, spslr_u8 value);
 int spslr_env_poke_text_16(void *dst, spslr_u16 value);
 int spslr_env_poke_text_32(void *dst, spslr_u32 value);
 int spslr_env_poke_text_64(void *dst, spslr_u64 value);
-int spslr_env_poke_data(void *dst, const void *src, spslr_u32 n);
-void *spslr_env_malloc(spslr_u32 n);
-void spslr_env_free(void *ptr);
-void spslr_env_memset(void *dst, int v, spslr_u32 n);
-void spslr_env_memcpy(void *dst, const void *src, spslr_u32 n);
-spslr_u32 spslr_env_random_u32(void);
+int spslr_env_poke_data(void *dst, const void *src, spslr_u64 n);
+void *spslr_env_malloc(spslr_u64 n);
+void spslr_env_free(void *ptr, spslr_u64 n);
+void spslr_env_memset(void *dst, int v, spslr_u64 n);
+void spslr_env_memcpy(void *dst, const void *src, spslr_u64 n);
+int spslr_env_memcmp(const void *x, const void *y, spslr_u64 n);
+spslr_u64 spslr_env_random_u64(void);
 
 #endif

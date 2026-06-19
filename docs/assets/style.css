@@ -9,6 +9,7 @@
   --accent-2: #b7f0d1;
   --warning: #ffd08a;
   --max: 1180px;
+  --border: var(--line);
 }
 
 * { box-sizing: border-box; }
@@ -190,7 +191,7 @@ a:hover { text-decoration: underline; }
 h1, h2, h3 { line-height: 1.18; }
 h1 { margin: 0 0 1rem; font-size: clamp(2.2rem, 6vw, 4.8rem); }
 h2 { margin: 2.5rem 0 .8rem; font-size: clamp(1.55rem, 3vw, 2.2rem); }
-h3 { margin: 0 0 .55rem; font-size: 1.15rem; }
+h3 { margin: 2rem 0 .55rem; font-size: 1.15rem; }
 
 .lead { color: #d3dce7; font-size: clamp(1.1rem, 2vw, 1.35rem); }
 p { margin: 0 0 1rem; }
@@ -226,28 +227,18 @@ p { margin: 0 0 1rem; }
   background: rgba(17,24,33,.82);
 }
 
-.note.warning { border-color: rgba(255,208,138,.45); }
+.note.warning {
+  border-color: rgba(255,208,138,.45);
+  margin-bottom: 1.25rem;
+}
+
 .note strong { color: var(--warning); }
 
-.figure-placeholder {
-  margin: 1.5rem 0;
-  padding: 1rem;
-  border: 1px dashed #52657a;
-  border-radius: 1rem;
-  background: rgba(255,255,255,.035);
-}
-
-.placeholder-box {
-  display: grid;
-  place-items: center;
-  min-height: 12rem;
-  border-radius: .8rem;
-  color: var(--muted);
-  background: repeating-linear-gradient(45deg, rgba(255,255,255,.05), rgba(255,255,255,.05) 12px, rgba(255,255,255,.025) 12px, rgba(255,255,255,.025) 24px);
-  font-weight: 700;
-}
-
 section {
+    scroll-margin-top: 6rem;
+}
+
+h2[id], h3[id] {
     scroll-margin-top: 6rem;
 }
 
@@ -344,34 +335,13 @@ code[class*="language-"] {
 .spslr-diagram {
     display: block;
     width: 100%;
-    min-width: 1050px;
     height: auto;
-}
-
-.svg-node {
-    cursor: pointer;
-    outline: none;
 }
 
 .svg-node rect {
     fill: rgba(255, 255, 255, 0.045);
     stroke: var(--border);
     stroke-width: 1.5;
-    transition: fill 140ms ease, stroke 140ms ease, filter 140ms ease;
-}
-
-.svg-node:hover rect,
-.svg-node:focus rect,
-.svg-node.is-hovered rect {
-    stroke: var(--accent);
-    fill: rgba(107, 114, 255, 0.11);
-    filter: drop-shadow(0 0 8px rgba(107, 114, 255, 0.22));
-}
-
-.svg-node.is-active rect {
-    stroke: var(--accent-2);
-    fill: rgba(107, 114, 255, 0.2);
-    filter: drop-shadow(0 0 12px rgba(107, 114, 255, 0.38));
 }
 
 .svg-node-title {
@@ -400,83 +370,153 @@ code[class*="language-"] {
 }
 
 .svg-edge {
-    fill: none;
-    stroke: var(--muted);
-    stroke-width: 2.4;
-    opacity: 0.72;
-    cursor: pointer;
-    pointer-events: stroke;
-    vector-effect: non-scaling-stroke;
-    transition: stroke 140ms ease, opacity 140ms ease, filter 140ms ease;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  transition: stroke .16s ease, filter .16s ease;
 }
 
-.svg-edge-arrow {
-    marker-end: url(#arrow-head);
-}
-
-.svg-edge.dashed {
-    stroke-dasharray: 7 7;
-}
-
-.svg-edge:hover,
-.svg-edge:focus,
-.svg-edge.is-hovered {
-    stroke: var(--accent);
-    opacity: 1;
-    filter: drop-shadow(0 0 8px rgba(107, 114, 255, 0.28));
-}
-
-.svg-edge.is-active {
-    stroke: var(--accent-2);
-    opacity: 1;
-    filter: drop-shadow(0 0 10px rgba(183, 240, 209, 0.45));
+.svg-edge-hit {
+  stroke: transparent;
+  stroke-width: 20;
+  fill: none;
+  pointer-events: stroke;
 }
 
 .svg-arrow-head {
-    fill: context-stroke;
+  fill: var(--muted);
+  transition: fill .16s ease;
 }
 
-.spslr-diagram-detail {
-    position: sticky;
-    bottom: 1rem;
-    z-index: 2;
-    margin-top: 1rem;
-    padding: 1rem;
-    border: 1px solid var(--border);
-    border-radius: 1rem;
-    background: rgba(8, 12, 24, 0.96);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+.svg-edge-label {
+  fill: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: help;
+  paint-order: stroke;
+  stroke: rgba(12, 17, 23, .95);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+  transition: fill .16s ease;
 }
 
-.spslr-diagram-detail h4 {
-    margin: 0.2rem 0 0.5rem;
+.svg-edge-group {
+  cursor: help;
 }
 
-.spslr-diagram-detail p {
-    margin-top: 0;
+.svg-edge-group:hover .svg-edge,
+.svg-edge-group:focus-within .svg-edge {
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 8px rgba(136, 209, 255, .35));
 }
 
-.spslr-diagram-detail pre {
-    margin-bottom: 0;
-    max-height: 14rem;
-    overflow: auto;
+.svg-edge-group:hover .svg-edge-label,
+.svg-edge-group:focus-within .svg-edge-label {
+  fill: var(--accent);
 }
 
-.detail-kicker {
-    color: var(--muted);
-    display: block;
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+.svg-edge-group:hover .svg-arrow-head,
+.svg-edge-group:focus-within .svg-arrow-head {
+  fill: var(--accent);
 }
 
 @media (max-width: 760px) {
     .spslr-diagram {
-        min-width: 1200px;
-    }
-
-    .spslr-diagram-detail {
-        position: static;
+        min-width: 900px;
     }
 }
 
+.concept-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.concept-card {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(17,24,33,.82);
+}
+
+.concept-card h3 {
+  margin-top: 0;
+}
+
+.concept-card p:last-child {
+  margin-bottom: 0;
+}
+
+.command-tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: .65rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  color: var(--text);
+  background: rgba(8, 12, 24, .97);
+  box-shadow: 0 16px 40px rgba(0,0,0,.35);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .85rem;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+
+@media (max-width: 760px) {
+  .concept-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.iface-card {
+    display: grid;
+    grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr);
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    background: rgba(17,24,33,.82);
+}
+
+.iface-code,
+.iface-text {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.iface-code {
+    min-width: 0;
+}
+
+.iface-code pre {
+    margin: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+}
+
+.iface-code code {
+    width: 100%;
+}
+
+.iface-text h3 {
+    margin-top: 0;
+}
+
+.iface-text p:last-child {
+    margin-bottom: 0;
+}
+
+.iface-meta {
+    margin: -.25rem 0 1rem;
+    color: var(--muted);
+    font-size: .9rem;
+}
+
+.nul {
+    color: #c084fc;
+}

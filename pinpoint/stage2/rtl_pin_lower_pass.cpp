@@ -1,6 +1,5 @@
 #include <stage2.h>
 #include <stage1.h>
-#include <final.h>
 #include <pinpoint_config.h>
 #include <pinpoint_error.h>
 
@@ -212,15 +211,13 @@ static std::string make_final_x86_64_asm(const std::string &sym,
 {
 	char buf[512];
 	std::snprintf(buf, sizeof(buf),
-		      ".globl %s\n"
-		      ".hidden %s\n"
 		      ".byte 0x%02x, 0xC7, 0x%02x\n"
 		      "%s:\n"
 		      ".type %s, @object\n"
 		      ".size %s, 4\n"
 		      ".long %zu",
-		      sym.c_str(), sym.c_str(), enc.rex, enc.modrm, sym.c_str(),
-		      sym.c_str(), sym.c_str(), imm);
+		      enc.rex, enc.modrm, sym.c_str(), sym.c_str(), sym.c_str(),
+		      imm);
 	return std::string(buf);
 }
 
@@ -255,8 +252,7 @@ static bool lower_stage1_marker_insn(rtx_insn *insn)
 	if (it == pins.end())
 		pinpoint_fatal("stage2: internal error after s2_pin_allocate");
 
-	it->second.symbol = std::string(SPSLR_PINPOINT_STAGE2_PIN) +
-			    std::string(get_cu_hash()) + "_" +
+	it->second.symbol = ".L" + std::string(SPSLR_PINPOINT_STAGE2_PIN) +
 			    std::to_string(pin_uid);
 
 	std::string final_asm =

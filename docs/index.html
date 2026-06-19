@@ -4,8 +4,9 @@
     <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.6.0">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Overview of SPSLR: status, scope and motivation.">
-    <title>Overview · SPSLR</title>
+    <meta name="description" content=
+    "Getting started with SPSLR: concepts, build flow and integration.">
+    <title>Getting Started · SPSLR</title>
     <link rel="stylesheet" href="assets/style.css">
     <link rel="stylesheet" href=
     "https://cdn.jsdelivr.net/npm/prismjs/themes/prism-okaidia.min.css">
@@ -13,6 +14,8 @@
     <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-c.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-bash.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-nasm.min.js"></script>
+    <script defer src=
+    "https://cdn.jsdelivr.net/npm/prismjs/components/prism-linker-script.min.js"></script>
     <script defer src="assets/main.js"></script>
 </head>
 <body>
@@ -21,7 +24,7 @@
         "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
         aria-expanded="false" aria-controls="site-nav">Menu</button>
         <nav id="site-nav" class="site-nav" aria-label="Main navigation">
-            <a href="index.html" aria-current="page">Overview</a> <a href=
+            <a href="index.html" aria-current="page">Getting Started</a> <a href=
             "architecture.html">Architecture</a> <a href="bootpatch-slr.html">Bootpatch-SLR</a>
             <a href="discussion.html">Discussion</a>
         </nav>
@@ -31,61 +34,61 @@
             <button class="toc-toggle" type="button" aria-expanded="true"><span class=
             "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
             <div class="toc-links">
-                <a href="#overview">Overview</a> <a href="#chapters">Chapters</a> <a href=
-                "#motivation">Motivation</a>
+                <a href="#documentation">Documentation</a> <a href="#motivation">Motivation</a>
+                <a href="#concepts">Concepts</a> <a href="#build-integration">Build Integration</a>
+                <a href="#source-integration">Source Integration</a> <a class="toc-child" href=
+                "#target-selection">Target Selection</a> <a class="toc-child" href=
+                "#runtime-api">Runtime API</a>
             </div>
         </aside>
         <article class="content">
             <section class="hero" id="overview">
-                <p class="eyebrow">Overview</p>
+                <p class="eyebrow">Getting Started</p>
                 <h1>Selfpatch-SLR</h1>
-                <p class="lead">Selfpatch-SLR (SPSLR) explores runtime structure layout
-                randomization for C programs through compiler-assisted metadata generation and
-                runtime patching of layout-sensitive code and static data.</p>
+                <p class="lead">Selfpatch-SLR (SPSLR) implements runtime structure layout
+                randomization for C programs on x86_64 Linux.</p>
                 <div class="note warning">
-                    <strong>Current status:</strong> research prototype. The SPSLR approach is
-                    implemented and the Linux kernel adaptation (Bootpatch-SLR / BPSLR) has
-                    successfully booted Ubuntu 24.04 using a custom Linux 6.12 kernel with
-                    runtime-randomized <code class="language-c">task_struct</code> layouts. It is
-                    not presented as production-hardened software.
+                    <strong>Current status:</strong> SPSLR is a research prototype for
+                    experimentation and evaluation, but with the ultimate goal of evolving into an
+                    upstreamable feature.
                 </div>
             </section>
-            <section id="chapters">
-                <h2>Chapters</h2>
-                <ol class="reading-list">
-                    <li>
-                        <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
-                        "">Repository README / getting started guide</a>
-                    </li>
-                    <li>
-                        <a href="index.html">Overview</a> is where you are at. It specifies the
-                        scope and motivation of this project.
-                    </li>
-                    <li>
-                        <a href="architecture.html">Architecture</a> explains the full SPSLR
-                        pipeline, including terminology, pinpoint, patchcompile, and selfpatch.
-                    </li>
-                    <li>
-                        <a href="bootpatch-slr.html">Bootpatch-SLR</a> describes the
-                        Linux-kernel-specific direction.
-                    </li>
-                    <li>
-                        <a href="discussion.html">Discussion</a> collects mailing list archive
-                        entries and public review material.
-                    </li>
-                </ol>
+            <section id="documentation">
+                <h2>Documentation</h2>
+                <p>The SPSLR documentation is organized into the following sections:</p>
+                <div class="concept-grid">
+                    <article class="concept-card">
+                        <h3><a href="index.html">Getting Started</a></h3>
+                        <p>Introduction to SPSLR, core concepts, build integration, runtime API
+                        usage, and practical integration guidance.</p>
+                    </article>
+                    <article class="concept-card">
+                        <h3><a href="architecture.html">Architecture</a></h3>
+                        <p>Internal SPSLR design, metadata format, pinpoint implementation details,
+                        and selfpatch internals.</p>
+                    </article>
+                    <article class="concept-card">
+                        <h3><a href="bootpatch-slr.html">Bootpatch-SLR</a></h3>
+                        <p>Information on the Linux kernel implementation of Selfpatch-SLR.</p>
+                    </article>
+                    <article class="concept-card">
+                        <h3><a href="discussion.html">Discussion</a></h3>
+                        <p>Collection of feedback, mailing list archive links, frequently asked
+                        questions and outstanding issues.</p>
+                    </article>
+                </div>
             </section>
             <section id="motivation">
                 <h2>Motivation</h2>
-                <p>Structure layout randomization (SLR) is intended to make memory corruption
+                <p>Structure layout randomization is intended to make memory corruption
                 exploitation more difficult by changing the in-memory placement of structure
-                members. Many exploits rely on corrupting a specific member inside a target object,
+                members. Many exploits rely on corrupting a specific field inside a target object,
                 for example function pointers, reference counters, credentials, length fields, or
                 linked-list pointers. Those attacks often depend on the attacker knowing the
                 relative offsets of members within the structure. By randomizing structure layouts,
-                those offsets become less predictable. An overwrite that successfully corrupts a
-                useful target member in one layout may instead corrupt an unrelated field in
-                another layout, potentially causing the exploit to fail or become unreliable.</p>
+                those offsets can be obfuscated. A fixed-offset overwrite that successfully
+                corrupts a useful target member in one layout may instead corrupt an unrelated
+                field in another layout, causing the exploit to fail or become unreliable.</p>
                 <p>Doing this at compile-time produces one random but fixed set of layouts per
                 compiled binary. Every deployed instance of that binary shares the same layouts.
                 Thus, an attacker that learns the structure layouts of one deployed instance can
@@ -96,6 +99,471 @@
                 decision to runtime. To make that possible, the compiler must expose the places
                 where generated code or static data relies on structure offsets, and the runtime
                 must patch those places after choosing the randomized layout.</p>
+            </section>
+            <section id="concepts">
+                <h2>Concepts</h2>
+                <p>The following general terms are used throughout the SPSLR documentation.</p>
+                <div class="concept-grid">
+                    <article class="concept-card concept-general">
+                        <h3>Subject</h3>
+                        <p>A linked program image that carries SPSLR metadata and can be patched by
+                        the SPSLR runtime component. Executables and shared libraries are both
+                        subjects.</p>
+                    </article>
+                    <article class="concept-card concept-general">
+                        <h3>Host subject</h3>
+                        <p>The main executable. It owns the randomized layouts and patches itself
+                        before patching modules.</p>
+                    </article>
+                    <article class="concept-card concept-general">
+                        <h3>Module subject</h3>
+                        <p>A shared library loaded by the host. It carries its own SPSLR metadata
+                        but is patched using the layouts selected by the host.</p>
+                    </article>
+                    <article class="concept-card concept-general">
+                        <h3>Target</h3>
+                        <p>A structure type which was marked for layout randomization.</p>
+                    </article>
+                </div>
+            </section>
+            <section id="build-integration">
+                <h2>Build Integration</h2>
+                <p>SPSLR requires a custom toolchain, currently based on GCC 16. Information on
+                building it, the SPSLR components themselves, and the example host and module
+                subjects can be found in the project's <a href=
+                "https://github.com/YJN-Systems/Selfpatch-SLR/blob/main/README.md" data-external=
+                "">README</a>. This section focuses on applying SPSLR to your project rather than
+                building SPSLR itself.</p>
+                <p>SPSLR requires only minor intervention in the normal build flow. All subject
+                source files should be compiled with the <code>pinpoint</code> GCC plugin so their
+                generated object files contain the required SPSLR metadata. This applies to both
+                host subjects and module subjects.</p>
+                <p>The <code>selfpatch</code> runtime itself should be compiled without
+                <code>pinpoint</code>. It is then linked into host subjects together with the
+                instrumented subject objects. Module subjects carry their own SPSLR metadata, but
+                do not link their own copy of the selfpatch runtime; they are patched by the host
+                after loading.</p>
+                <figure class="spslr-svg-figure">
+                    <figcaption>
+                        <strong>SPSLR build integration:</strong> hover over edge labels to see
+                        example commands.
+                    </figcaption>
+                    <div class="spslr-diagram-wrap">
+                        <svg class="spslr-diagram build-flow-diagram" viewbox="20 20 960 620" role=
+                        "img" aria-label="SPSLR build flow from source files to linked subjects">
+                        <defs>
+                            <marker id="arrow-head" markerwidth="7" markerheight="7" refx="6" refy=
+                            "3.5" orient="auto" markerunits="strokeWidth">
+                                <path d="M 0 0 L 7 3.5 L 0 7 z" class="svg-arrow-head" fill=
+                                "context-stroke"></path>
+                            </marker>
+                        </defs>
+                        <text x="120" y="40" class="svg-lane-label">
+                            C files
+                        </text>
+                        <text x="450" y="40" class="svg-lane-label">
+                            Object files
+                        </text>
+                        <text x="780" y="40" class="svg-lane-label">
+                            Subject binaries
+                        </text>
+                        <g class="svg-node">
+                            <rect x="60" y="85" width="170" height="52" rx="12"></rect>
+                            <text x="145" y="118" text-anchor="middle" class="svg-node-title">
+                                selfpatch.c
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="60" y="170" width="170" height="52" rx="12"></rect>
+                            <text x="145" y="203" text-anchor="middle" class="svg-node-title">
+                                main.c
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="60" y="245" width="170" height="52" rx="12"></rect>
+                            <text x="145" y="278" text-anchor="middle" class="svg-node-title">
+                                foo.c
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="60" y="320" width="170" height="52" rx="12"></rect>
+                            <text x="145" y="353" text-anchor="middle" class="svg-node-title">
+                                bar.c
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="60" y="455" width="170" height="52" rx="12"></rect>
+                            <text x="145" y="488" text-anchor="middle" class="svg-node-title">
+                                module.c
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="60" y="530" width="170" height="52" rx="12"></rect>
+                            <text x="145" y="563" text-anchor="middle" class="svg-node-title">
+                                baz.c
+                            </text>
+                        </g>
+                        <g class="svg-node small">
+                            <rect x="410" y="85" width="170" height="52" rx="12"></rect>
+                            <text x="495" y="118" text-anchor="middle" class="svg-node-title">
+                                selfpatch.o
+                            </text>
+                        </g>
+                        <g class="svg-node small">
+                            <rect x="410" y="170" width="170" height="52" rx="12"></rect>
+                            <text x="495" y="203" text-anchor="middle" class="svg-node-title">
+                                main.o
+                            </text>
+                        </g>
+                        <g class="svg-node small">
+                            <rect x="410" y="245" width="170" height="52" rx="12"></rect>
+                            <text x="495" y="278" text-anchor="middle" class="svg-node-title">
+                                foo.o
+                            </text>
+                        </g>
+                        <g class="svg-node small">
+                            <rect x="410" y="320" width="170" height="52" rx="12"></rect>
+                            <text x="495" y="353" text-anchor="middle" class="svg-node-title">
+                                bar.o
+                            </text>
+                        </g>
+                        <g class="svg-node small">
+                            <rect x="410" y="455" width="170" height="52" rx="12"></rect>
+                            <text x="495" y="488" text-anchor="middle" class="svg-node-title">
+                                module.o
+                            </text>
+                        </g>
+                        <g class="svg-node small">
+                            <rect x="410" y="530" width="170" height="52" rx="12"></rect>
+                            <text x="495" y="563" text-anchor="middle" class="svg-node-title">
+                                baz.o
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="760" y="200" width="180" height="64" rx="14"></rect>
+                            <text x="850" y="226" text-anchor="middle" class="svg-node-title">
+                                host
+                            </text>
+                            <text x="850" y="248" text-anchor="middle" class="svg-node-subtitle">
+                                executable
+                            </text>
+                        </g>
+                        <g class="svg-node">
+                            <rect x="760" y="485" width="180" height="64" rx="14"></rect>
+                            <text x="850" y="511" text-anchor="middle" class="svg-node-title">
+                                module.so
+                            </text>
+                            <text x="850" y="533" text-anchor="middle" class="svg-node-subtitle">
+                                shared library
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -c selfpatch.c -o selfpatch.o">
+							<path class="svg-edge-hit" d="M 230 111 H 410"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 230 111 H 410"></path>
+                            <text x="320" y="99" text-anchor="middle" class="svg-edge-label">
+                                gcc
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -fplugin=pinpoint.so -c main.c -o main.o">
+							<path class="svg-edge-hit" d="M 230 196 H 410"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 230 196 H 410"></path>
+                            <text x="320" y="184" text-anchor="middle" class="svg-edge-label">
+                                gcc + pinpoint
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -fplugin=pinpoint.so -c foo.c -o foo.o">
+                            <path class="svg-edge-hit" d="M 230 271 H 410"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 230 271 H 410"></path>
+                            <text x="320" y="259" text-anchor="middle" class="svg-edge-label">
+                                gcc + pinpoint
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -fplugin=pinpoint.so -c bar.c -o bar.o">
+                            <path class="svg-edge-hit" d="M 230 346 H 410"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 230 346 H 410"></path>
+                            <text x="320" y="334" text-anchor="middle" class="svg-edge-label">
+                                gcc + pinpoint
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -fplugin=pinpoint.so -c module.c -o module.o">
+                            <path class="svg-edge-hit" d="M 230 481 H 410"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 230 481 H 410"></path>
+                            <text x="320" y="469" text-anchor="middle" class="svg-edge-label">
+                                gcc + pinpoint
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -fplugin=pinpoint.so -c baz.c -o baz.o">
+                            <path class="svg-edge-hit" d="M 230 556 H 410"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 230 556 H 410"></path>
+                            <text x="320" y="544" text-anchor="middle" class="svg-edge-label">
+                                gcc + pinpoint
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr selfpatch.o main.o foo.o bar.o -o host">
+                            <path class="svg-edge-hit" d="M 580 111 H 640"></path>
+                            <path class="svg-edge-hit" d="M 580 196 H 640"></path>
+                            <path class="svg-edge-hit" d="M 580 271 H 640"></path>
+                            <path class="svg-edge-hit" d="M 580 346 H 640"></path>
+							<path class="svg-edge-hit" d="M 640 111 V 346"></path>
+							<path class="svg-edge-hit" d="M 640 232 H 760"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 580 111 H 640"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 580 196 H 640"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 580 271 H 640"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 580 346 H 640"></path>
+							<path class="svg-edge svg-edge-arrow" d="M 640 111 V 346"></path>
+							<path class="svg-edge svg-edge-arrow" d="M 640 232 H 760"></path>
+                            <text x="700" y="220" text-anchor="middle" class="svg-edge-label">
+                                ld
+                            </text>
+                        </g>
+                        <g class="svg-edge-group" data-tooltip=
+                        "gcc-spslr -shared module.o baz.o -o module.so">
+                            <path class="svg-edge-hit" d="M 580 481 H 640"></path>
+                            <path class="svg-edge-hit" d="M 580 556 H 640"></path>
+							<path class="svg-edge-hit" d="M 640 481 V 556"></path>
+							<path class="svg-edge-hit" d="M 640 517 H 760"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 580 481 H 640"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 580 556 H 640"></path>
+							<path class="svg-edge svg-edge-arrow" d="M 640 481 V 556"></path>
+							<path class="svg-edge svg-edge-arrow" d="M 640 517 H 760"></path>
+                            <text x="700" y="505" text-anchor="middle" class="svg-edge-label">
+                                ld
+                            </text>
+                        </g></svg>
+                    </div>
+                </figure>
+                <p>Every SPSLR image, including shared modules, must retain all SPSLR metadata
+                sections and define start and stop symbols for the unit and target metadata ranges.
+                Depending on the toolchain and image type, these symbols may be generated
+                automatically. For example, host subjects are often able to use the
+                linker-generated SPSLR boundary symbols directly, whereas shared modules may
+                require a custom linker script to define them explicitly.</p>
+                <p>If the required symbols are not available by default, a custom linker script
+                must be used to preserve SPSLR metadata sections and define the required metadata
+                boundaries, for example as follows:</p>
+                <pre><code class="language-ld">SECTIONS
+{
+  .spslr_units : {
+    __start_spslr_units = .;
+    KEEP(*(spslr_units))
+    __stop_spslr_units = .;
+  }
+
+  .spslr_targets : {
+    __start_spslr_targets = .;
+    KEEP(*(spslr_targets))
+    __stop_spslr_targets = .;
+  }
+
+  .spslr_target_layouts : { KEEP(*(spslr_target_layouts)) }
+  .spslr_cu_target_refs : { KEEP(*(spslr_cu_target_refs)) }
+  .spslr_ipins : { KEEP(*(spslr_ipins)) }
+  .spslr_dpins : { KEEP(*(spslr_dpins)) }
+  .spslr_strtab : { KEEP(*(spslr_strtab)) }
+}
+INSERT AFTER .data;</code></pre>
+            </section>
+            <section id="source-integration">
+                <h2>Source Integration</h2>
+                <p>Source integration consists of two parts: marking the structure types that
+                should participate in layout randomization and calling the selfpatch runtime.
+                Target annotations tell <code>pinpoint</code> which structures and fields require
+                metadata, while the runtime API lets the host subject initialize layouts, patch
+                itself, and patch modules after loading.</p>
+                <h3 id="target-selection">Target Selection</h3>
+                <p>While the exact annotation interface may evolve, a typical target declaration
+                looks like this:</p>
+                <pre><code class="language-c">struct example_target {
+    int flags;
+    void *ptr __attribute__((spslr_field_fixed));
+    unsigned long counter;
+} __attribute__((spslr));</code></pre>
+                <p>Most code should treat randomized target structures as opaque. However, some
+                fields may need to remain at fixed offsets due to ABI requirements or other
+                layout-sensitive interfaces. Such fields can be marked as fixed to exclude them
+                from SPSLR randomization while allowing the remainder of the target structure to be
+                randomized.</p>
+                <p>Examples of code that may require fixed fields include:</p>
+                <ul>
+                    <li>casting a structure pointer to a pointer to its first member,</li>
+                    <li>assumptions about field ordering or contiguous placement,</li>
+                    <li>serialization or ABI logic that depends on a stable in-memory layout.</li>
+                </ul>
+                <div class="note warning">
+                    <strong>WARNING:</strong> Structure layout randomization fundamentally
+                    conflicts with assumptions made by the C language and common low-level
+                    programming idioms. In standard C, structure layouts are fixed and observable.
+                    Structure layout randomization, at compile- or runtime, intentionally violates
+                    these assumptions. As a result, some otherwise-valid code constructs are
+                    incompatible with SLR.
+                </div>
+                <h3 id="runtime-api">Runtime API</h3>
+                <p>After target structures have been annotated and compiled with
+                <code>pinpoint</code>, the remaining integration work happens through the selfpatch
+                runtime API. Host subjects use the API to select randomized layouts and patch
+                themselves during startup. They also use it to patch SPSLR-enabled modules after
+                loading.</p>
+                <p>Include the public API with:</p>
+                <pre><code class="language-c">#include &lt;spslr.h&gt;</code></pre>
+                <p>The following excerpt shows the public interface most applications interact
+                with. The complete API is declared in <code>&lt;spslr.h&gt;</code>.</p>
+                <pre><code class="language-c">#define SPSLR_START_UNITS_SYM   __start_spslr_units
+#define SPSLR_STOP_UNITS_SYM    __stop_spslr_units
+#define SPSLR_START_TARGETS_SYM __start_spslr_targets
+#define SPSLR_STOP_TARGETS_SYM  __stop_spslr_targets
+
+enum spslr_viability {
+    SPSLR_VIABLE,
+    SPSLR_NONVIABLE
+};
+
+enum spslr_error {
+    SPSLR_OK,
+    ...
+}
+
+struct spslr_status {
+    enum spslr_viability viability;
+    enum spslr_error error;
+};
+
+struct spslr_entry {
+    const void *start_units;
+    const void *stop_units;
+    const void *start_targets;
+    const void *stop_targets;
+};
+
+struct spslr_ctx {
+    struct spslr_entry entry;
+    void *workspace;
+};
+
+struct spslr_status spslr_init(void);
+struct spslr_status spslr_selfpatch(void);
+unsigned long spslr_workspace_size(const struct spslr_entry *entry);
+struct spslr_status spslr_patch_module(const struct spslr_ctx *m);</code></pre>
+                <p>Host startup begins with <code>spslr_init()</code> and
+                <code>spslr_selfpatch()</code>. During initialization, SPSLR chooses randomized
+                layouts for all discovered targets. On selfpatch, those layouts are then applied to
+                the host subject by patching every code and data location described by the
+                generated metadata.</p>
+                <p>A typical host subject initializing SPSLR and patching itself, at the beginning
+                of <code class="language-c">main()</code>, looks like this:</p>
+                <pre><code class="language-c">int main(int argc, char **argv) {
+    struct spslr_status st;
+
+    /* Randomize layouts */
+    st = spslr_init();
+    if (st.error != SPSLR_OK)
+        error;
+
+    /* Patch host image in-memory */
+    st = spslr_selfpatch();
+    if (st.error != SPSLR_OK)
+        error;
+
+    /* Normal program execution begins here */
+    ...
+}</code></pre>
+                <p>Under contextual constraints, the image selfpatch step may be deferred.
+                Dynamically created target instances may exist before spslr_selfpatch() only if
+                they are fully dead before the patching boundary. They must not be used after
+                patching, because stack and heap instances are not tracked by SPSLR metadata and
+                therefore are not retrospectively transformed into the randomized layouts.
+                Dynamically allocating target instances after patching is perfectly fine, of
+                course.</p>
+                <p>Static target instances are different. Because they are part of the program
+                image, SPSLR reorders their fields during selfpatch. Reads and writes performed
+                before and after patching are therefore permitted, provided that no pointers
+                materialized from compile-time field offsets are preserved and used across the
+                patching boundary:</p>
+                <pre><code class="language-c">static struct target obj;
+
+int main(void) {
+    spslr_init();
+
+    /* Ok: static target instances may be accessed before patching. */
+    obj.fieldA = 42;
+
+    /* Ok: pointer usage does not cross patching boundary. */
+    int *fieldB_ptr = &amp;obj.fieldB;
+    *fieldB_ptr = 41;
+
+    spslr_selfpatch();
+
+    /* Bad: fieldB_ptr still points to the field's pre-patch location. */
+    *fieldB_ptr = 42;
+
+    /* Ok: pointer assignment now goes through patched code and randomized offsets. */
+    fieldB_ptr = &amp;obj.fieldB;
+    *fieldB_ptr = 42;
+}</code></pre>
+                <p>Once the host has been patched, it can load and patch SPSLR-enabled modules.
+                Module subjects do not select their own layouts. Instead, they reuse the layouts
+                already chosen by the host so that randomized targets remain compatible across
+                subject boundaries.</p>
+                <p>Before patching can begin, the module must have been fully loaded and relocated.
+                In a typical userspace environment this means calling <code>dlopen()</code> first
+                and only invoking SPSLR once the loader has completed its relocation work.</p>
+                <p>The host then locates the module metadata and stores the resulting boundary
+                addresses in an <code>spslr_entry</code>, which describes the metadata ranges of
+                the subject being patched. Next, it allocates a temporary workspace buffer of at
+                least <code>spslr_workspace_size(&amp;entry)</code> bytes, constructs an
+                <code>spslr_ctx</code>, and invokes <code>spslr_patch_module()</code>.</p>
+                <pre><code class="language-c">#include &lt;dlfcn.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;spslr.h&gt;
+
+#define XSTR(a) STR(a)
+#define STR(a) #a
+
+int patch_loaded_module(void *handle)
+{
+    struct spslr_ctx ctx;
+
+    ctx.entry.start_units =
+        dlsym(handle, XSTR(SPSLR_START_UNITS_SYM));
+    ctx.entry.stop_units =
+        dlsym(handle, XSTR(SPSLR_STOP_UNITS_SYM));
+    ctx.entry.start_targets =
+        dlsym(handle, XSTR(SPSLR_START_TARGETS_SYM));
+    ctx.entry.stop_targets =
+        dlsym(handle, XSTR(SPSLR_STOP_TARGETS_SYM));
+
+    ctx.workspace =
+        malloc(spslr_workspace_size(&amp;ctx.entry));
+
+    struct spslr_status st =
+        spslr_patch_module(&amp;ctx);
+
+    free(ctx.workspace);
+
+    return st.error != SPSLR_OK;
+}</code></pre>
+                <p>The workspace only needs to remain valid for the duration of the patching call
+                and may be freed after <code>spslr_patch_module()</code> returns.</p>
+                <div class="note warning">
+                    <strong>Before calling <code>spslr_patch_module()</code>:</strong> do not
+                    execute code from the module, do not allocate module-owned randomized target
+                    objects, and do not persist pointers to randomized module fields.
+                </div>
+                <p>Besides an error code, the <code>struct spslr_status</code> also reports whether
+                the corresponding subject remains viable.</p>
+                <p>A successful operation leaves the subject fully patched and viable. However,
+                failures that occur after patching has already begun may leave a subject in a
+                partially patched state. Such subjects must be considered unusable.</p>
+                <p>For host subjects, a non-viable result from <code>spslr_selfpatch()</code>
+                should be treated as fatal. For module subjects, a non-viable result from
+                <code>spslr_patch_module()</code> means the module must not be executed and should
+                be unloaded.</p>
             </section>
         </article>
     </main>

@@ -1,7 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <map>
-#include <unordered_map>
+#include <map>
 #include <string>
 #include <list>
 #include <limits>
@@ -16,7 +16,9 @@ class TargetType {
     public:
 	struct Field {
 		static constexpr std::size_t FLAG_DANGEROUS = 1;
+		static constexpr std::size_t FLAG_OVERLAP = 2;
 
+		std::string name;
 		std::size_t offset;
 		std::size_t size;
 		std::size_t alignment;
@@ -58,7 +60,7 @@ class TargetType {
 	static const TargetType *find(tree t); // O(n)
 	static const TargetType *find(UID uid); // O(1)
 	static bool reference(tree ref, UID &target, std::size_t &offset);
-	static const std::unordered_map<UID, TargetType> &all();
+	static const std::map<UID, TargetType> &all();
 	static void reset();
 
     private:
@@ -85,7 +87,6 @@ struct DataPin {
 	};
 
 	std::string symbol; // potentially local object symbol
-	std::string pin_symbol; // global alias symbol
 	std::list<Component> components;
 
 	static void reset();

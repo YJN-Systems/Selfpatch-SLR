@@ -1,5 +1,6 @@
 #include <stage0.h>
 #include <functional>
+#include <cstring>
 
 #include <safe-langhooks.h>
 #include <safe-attribs.h>
@@ -18,7 +19,7 @@
  */
 
 static UID next_uid = 0;
-static std::unordered_map<UID, TargetType> targets;
+static std::map<UID, TargetType> targets;
 
 static tree get_record_main_variant(tree t)
 {
@@ -26,6 +27,27 @@ static tree get_record_main_variant(tree t)
 		return NULL_TREE;
 
 	return TYPE_MAIN_VARIANT(t);
+}
+
+static std::string field_decl_name(tree field_decl)
+{
+	tree name = DECL_NAME(field_decl);
+
+	if (!name)
+		return "<anonymous>";
+
+	return IDENTIFIER_POINTER(name);
+}
+
+static std::string merge_field_names(const std::string &a, const std::string &b)
+{
+	if (a.empty())
+		return b;
+
+	if (b.empty())
+		return a;
+
+	return a + "," + b;
 }
 
 TargetType::TargetType(tree t)
@@ -281,7 +303,7 @@ bool TargetType::reference(tree ref, UID &target, std::size_t &offset)
 	return true;
 }
 
-const std::unordered_map<UID, TargetType> &TargetType::all()
+const std::map<UID, TargetType> &TargetType::all()
 {
 	return targets;
 }
@@ -322,6 +344,8 @@ foreach_record_field(tree t,
 				       TargetType::Field::FLAG_DANGEROUS :
 				       0);
 
+		field.name = field_decl_name(field_decl);
+
 		if (!callback(field))
 			return false;
 	}
@@ -342,6 +366,7 @@ static bool field_map_add(std::map<std::size_t, TargetType::Field> &map,
 			  const TargetType::Field &field)
 {
 	TargetType::Field tmp_field;
+	tmp_field.name = field.name;
 	tmp_field.offset = field.offset;
 	tmp_field.size = (field.size == 0 ? 1 : field.size);
 	tmp_field.alignment = (field.alignment == 0 ? 1 : field.alignment);
@@ -368,8 +393,11 @@ static bool field_map_add(std::map<std::size_t, TargetType::Field> &map,
 		auto combined_size = combined_end - combined_offset;
 
 		tmp_field.flags |= (existing_field.flags |
-				    TargetType::Field::FLAG_DANGEROUS);
+				    TargetType::Field::FLAG_DANGEROUS |
+				    TargetType::Field::FLAG_OVERLAP);
 		tmp_field.offset = combined_offset;
+		tmp_field.name =
+			merge_field_names(tmp_field.name, existing_field.name);
 
 		std::size_t required_alignment =
 			std::max(tmp_field.alignment, existing_field.alignment);

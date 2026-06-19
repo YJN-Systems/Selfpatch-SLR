@@ -31,10 +31,9 @@
             <button class="toc-toggle" type="button" aria-expanded="true"><span class=
             "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
             <div class="toc-links">
-                <a href="#bpslr">Bootpatch-SLR</a> <a href="#status">Status</a> <a href=
-                "#randstruct">Why not RandStruct?</a> <a href="#implementation">Current
-                implementation</a> <a href="#repository">Repository</a> <a href="#todo">Known
-                issues</a>
+                <a href="#status">Status</a> <a href="#randstruct">Why not RandStruct?</a> <a href=
+                "#implementation">Current implementation</a> <a href="#repository">Repository</a>
+                <a href="#todo">Known issues</a>
             </div>
         </aside>
         <article class="content">
@@ -83,12 +82,12 @@
                 evaluability, matching the fixed-field restriction described in the SPSLR
                 architecture documentation.</p>
                 <p>BPSLR reuses the SPSLR pipeline almost entirely. The existing <code class=
-                "language-c">pinpoint</code> and <code class="language-c">patchcompile</code>
-                components are used unchanged, including compiler instrumentation, dependency
-                tracking, and metadata generation. Only the <code class=
-                "language-c">selfpatch</code> stage is adapted to the Linux kernel environment,
-                where an early boot-time patching step applies the selected randomized layout
-                before randomized structures are used during normal kernel execution.</p>
+                "language-c">pinpoint</code> plugin is used unchanged, including compiler
+                instrumentation, dependency tracking, and metadata generation. Of the <code class=
+                "language-c">selfpatch</code> stage, only a small portion is adapted to the Linux
+                kernel environment, where an early boot-time patching step applies the selected
+                randomized layout before randomized structures are used during normal kernel
+                execution.</p>
                 <p>BPSLR has successfully booted into Ubuntu 24.04 using a custom Linux 6.12 kernel
                 built from an almost-default Ubuntu kernel configuration for that release. The
                 prototype currently demonstrates successful early boot and userspace startup with
@@ -127,6 +126,24 @@
                     current focus is the <code class="language-c">task_struct</code>; broader
                     coverage requires auditing more structures and their initialization, ABI,
                     debugging, and metadata interactions.</li>
+                    <li><strong>No new compiler plugins are allowed into Linux.</strong> To make
+                    its way into the kernel, BPSLR will require upstream compiler support.
+                    Eventually, the pinpoint plugin must be converted into patches for GCC and/or
+                    Clang.</li>
+                    <li><strong>Micro-assemblers do not belong into compiler
+                    infrastructure.</strong> To place instruction pins directly at immediate
+                    operands, SPSLR uses a tiny assembler inside the pinpoint plugin. It is
+                    architecture-dependent and poorly maintainable. A new relocation type or custom
+                    operand labeling mechanism with assembler support could overcome this
+                    hurdle.</li>
+                    <li><strong>Instrumentation correctness is hard to verify.</strong> Successful
+                    boots and user space tests serve as valuable indication for mostly correct
+                    patching, but neither guarantees that no special-case struct accesses have been
+                    missed by the compiler. A QEMU TCG plugin is currently being developed to track
+                    memory accesses to target structures at runtime. Instructions that read or
+                    write target memory but are not present on an allow-list of instrumented
+                    instructions can be identified for further investigation. This should
+                    eventually provide proper SPSLR debugging and validation infrastructure.</li>
                 </ul>
             </section>
         </article>

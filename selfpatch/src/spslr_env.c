@@ -60,7 +60,7 @@ static int spslr_env_get_prot(void *addr, int *prot)
 	return -1;
 }
 
-static int spslr_env_poke_safe(void *dst, const void *src, spslr_u32 n)
+static int spslr_env_poke_safe(void *dst, const void *src, spslr_u64 n)
 {
 	/*
 	 * Temporarily relax page permissions for text patching.
@@ -110,29 +110,35 @@ int spslr_env_poke_text_64(void *dst, spslr_u64 value)
 	return spslr_env_poke_safe(dst, &value, sizeof(value));
 }
 
-void *__init spslr_env_malloc(spslr_u32 n)
+void *__init spslr_env_malloc(spslr_u64 n)
 {
 	return malloc(n);
 }
 
-void __init spslr_env_free(void *ptr)
+void __init spslr_env_free(void *ptr, spslr_u64 n)
 {
+	(void)n;
 	free(ptr);
 }
 
-int spslr_env_poke_data(void *dst, const void *src, spslr_u32 n)
+int spslr_env_poke_data(void *dst, const void *src, spslr_u64 n)
 {
 	return spslr_env_poke_safe(dst, src, n);
 }
 
-void spslr_env_memset(void *dst, int v, spslr_u32 n)
+void spslr_env_memset(void *dst, int v, spslr_u64 n)
 {
 	memset(dst, v, n);
 }
 
-void spslr_env_memcpy(void *dst, const void *src, spslr_u32 n)
+void spslr_env_memcpy(void *dst, const void *src, spslr_u64 n)
 {
 	memcpy(dst, src, n);
+}
+
+int spslr_env_memcmp(const void *x, const void *y, spslr_u64 n)
+{
+	return memcmp(x, y, n);
 }
 
 /*
@@ -144,7 +150,7 @@ void spslr_env_memcpy(void *dst, const void *src, spslr_u32 n)
 
 static int rand_initialized = 0;
 
-spslr_u32 __init spslr_env_random_u32(void)
+static spslr_u32 __init random_u32(void)
 {
 	if (!rand_initialized) {
 		srand(time(NULL));
@@ -152,4 +158,9 @@ spslr_u32 __init spslr_env_random_u32(void)
 	}
 
 	return (spslr_u32)rand();
+}
+
+spslr_u64 __init spslr_env_random_u64(void)
+{
+	return (spslr_u64)random_u32() | ((spslr_u64)random_u32() << 32);
 }

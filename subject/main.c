@@ -155,33 +155,28 @@ static void print_tasks(struct list_head *task_list)
 	}
 }
 
-static int fetch_module_spslr_symbols(void *handle, struct spslr_module *mod)
+#define XSTR(a) STR(a)
+#define STR(a) #a
+
+static int fetch_spslr_entry(void *handle, struct spslr_entry *entry)
 {
-	if (!handle || !mod)
+	if (!handle)
 		return -1;
 
-	mod->ipin_cnt = dlsym(handle, SPSLR_MODULE_SYM_IPIN_CNT);
-	if (!mod->ipin_cnt)
+	entry->start_units = dlsym(handle, XSTR(SPSLR_START_UNITS_SYM));
+	if (!entry->start_units)
 		return -1;
 
-	mod->ipins = dlsym(handle, SPSLR_MODULE_SYM_IPINS);
-	if (!mod->ipins)
+	entry->stop_units = dlsym(handle, XSTR(SPSLR_STOP_UNITS_SYM));
+	if (!entry->stop_units)
 		return -1;
 
-	mod->ipin_op_cnt = dlsym(handle, SPSLR_MODULE_SYM_IPIN_OP_CNT);
-	if (!mod->ipin_op_cnt)
+	entry->start_targets = dlsym(handle, XSTR(SPSLR_START_TARGETS_SYM));
+	if (!entry->start_targets)
 		return -1;
 
-	mod->ipin_ops = dlsym(handle, SPSLR_MODULE_SYM_IPIN_OPS);
-	if (!mod->ipin_ops)
-		return -1;
-
-	mod->dpin_cnt = dlsym(handle, SPSLR_MODULE_SYM_DPIN_CNT);
-	if (!mod->dpin_cnt)
-		return -1;
-
-	mod->dpins = dlsym(handle, SPSLR_MODULE_SYM_DPINS);
-	if (!mod->dpins)
+	entry->stop_targets = dlsym(handle, XSTR(SPSLR_STOP_TARGETS_SYM));
+	if (!entry->stop_targets)
 		return -1;
 
 	return 0;
@@ -197,23 +192,25 @@ static int run_module_report(const char *module_path,
 		return -1;
 	}
 
-	struct spslr_module mod;
-	if (fetch_module_spslr_symbols(handle, &mod) < 0) {
-		fprintf(stderr, "failed to fetch spslr symbols in module\n");
+	struct spslr_ctx module_ctx;
+
+	if (fetch_spslr_entry(handle, &module_ctx.entry) != 0) {
+		fprintf(stderr,
+			"failed to fetch spslr entry location in module\n");
 		dlclose(handle);
 		return -1;
 	}
 
-	unsigned long reorder_buffer_size = spslr_reorder_buffer_size();
-	void *reorder_buffer = malloc(reorder_buffer_size);
-	if (!reorder_buffer) {
-		fprintf(stderr, "failed to allocate module reorder buffer\n");
+	unsigned long workspace_size = spslr_workspace_size(&module_ctx.entry);
+	module_ctx.workspace = malloc(workspace_size);
+	if (!module_ctx.workspace) {
+		fprintf(stderr, "failed to allocate module workspace buffer\n");
 		dlclose(handle);
 		return -1;
 	}
 
-	struct spslr_status status = spslr_patch_module(&mod, reorder_buffer);
-	free(reorder_buffer);
+	struct spslr_status status = spslr_patch_module(&module_ctx);
+	free(module_ctx.workspace);
 
 	if (status.error != SPSLR_OK) {
 		fprintf(stderr, "failed to patch module\n");

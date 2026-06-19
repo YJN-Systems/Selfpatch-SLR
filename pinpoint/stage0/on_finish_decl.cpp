@@ -1,5 +1,4 @@
 #include <stage0.h>
-#include <final.h>
 
 #include <unordered_set>
 #include <string>
@@ -7,25 +6,17 @@
 #include <pinpoint_error.h>
 #include <pinpoint_config.h>
 
-static UID next_dpin_uid = 0;
 static std::list<DataPin> pins;
 static std::unordered_set<std::string> seen_dpin_symbols;
 
 void DataPin::reset()
 {
 	pins.clear();
-	next_dpin_uid = 0;
 }
 
 const std::list<DataPin> &DataPin::all()
 {
 	return pins;
-}
-
-static std::string make_dpin_symbol()
-{
-	return std::string(SPSLR_PINPOINT_DPIN) + std::string(get_cu_hash()) +
-	       "_" + std::to_string(next_dpin_uid++);
 }
 
 static std::list<DataPin::Component>
@@ -198,7 +189,6 @@ static void on_static_var(tree var)
 	// pin.global = static_cast<bool>(TREE_PUBLIC(var));
 
 	pin.symbol = sym;
-	pin.pin_symbol = make_dpin_symbol();
 	pins.emplace_back(std::move(pin));
 }
 

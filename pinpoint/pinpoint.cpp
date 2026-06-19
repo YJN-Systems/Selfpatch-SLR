@@ -15,30 +15,6 @@ int plugin_is_GPL_compatible;
 
 bool pinpoint_verbose_enabled;
 
-static const char *srcroot = nullptr;
-static const char *metadir = nullptr;
-static std::string computed_output_file; /* Must remain alive */
-
-static void set_legacy_output_file(void)
-{
-	if (has_output_file())
-		return;
-
-	if (!srcroot || !metadir)
-		return;
-
-	std::filesystem::path src = main_input_filename;
-	std::filesystem::path root = srcroot;
-
-	std::filesystem::path rel = std::filesystem::relative(src, root);
-	std::filesystem::path out = std::filesystem::path(metadir) / rel;
-
-	out += ".spslr";
-
-	computed_output_file = out.string();
-	set_output_file(computed_output_file.c_str());
-}
-
 int plugin_init(struct plugin_name_args *plugin_info,
 		struct plugin_gcc_version *version)
 {
@@ -52,23 +28,9 @@ int plugin_init(struct plugin_name_args *plugin_info,
 	pinpoint_verbose_enabled = false;
 
 	for (int i = 0; i < plugin_info->argc; ++i) {
-		if (!strcmp(plugin_info->argv[i].key, "out")) {
-			set_output_file(plugin_info->argv[i].value);
-		} else if (!strcmp(plugin_info->argv[i].key, "metadir")) {
-			metadir = plugin_info->argv[i].value;
-		} else if (!strcmp(plugin_info->argv[i].key, "srcroot")) {
-			srcroot = plugin_info->argv[i].value;
-		} else if (!strcmp(plugin_info->argv[i].key, "verbose")) {
+		if (!strcmp(plugin_info->argv[i].key, "verbose")) {
 			pinpoint_verbose_enabled = true;
 		}
-	}
-
-	set_legacy_output_file();
-
-	if (!has_output_file()) {
-		plugin_print_early_error(
-			"missing output file argument: use either out=<file> or metadir=<dir> plus srcroot=<dir>");
-		return 1;
 	}
 
 	/*

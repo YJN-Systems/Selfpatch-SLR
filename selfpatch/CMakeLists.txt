@@ -47,4 +47,3 @@ set_target_properties(selfpatch PROPERTIES
 	C_EXTENSIONS YES
 )
 
-target_include_directories(patchcompile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src) # For spslr_list.h

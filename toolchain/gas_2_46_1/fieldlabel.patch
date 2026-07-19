@@ -1,0 +1,847 @@
+From 0cfb2684b5f48901cf30ed435a3cfd3a8187b05f Mon Sep 17 00:00:00 2001
+From: York Jasper Niebuhr <yjn@yjn-systems.com>
+Date: Wed, 24 Jun 2026 13:53:17 +0200
+Subject: [PATCH 1/3] Implemented fieldlabel expression annotations
+
+This patch implements the fieldlabel pseudo function to make GAS emit
+labels at the bytes that encode immediate or displacement bytes.
+
+An example for the fieldlabel feature is:
+
+    movq $fieldlabel(42, .Lsome_label), %0
+
+This causes GAS to put the .Lsome_label directly onto the bytes that
+encode the immediate value 42.
+
+The current implementation is only for x86_64.
+
+Signed-off-by: York Jasper Niebuhr <yjn@yjn-systems.com>
+---
+ gas/config/tc-i386.c | 27 +++++++++++++++++++++
+ gas/expr.c           | 56 ++++++++++++++++++++++++++++++++++++++++++++
+ gas/expr.h           |  4 ++++
+ 3 files changed, 87 insertions(+)
+
+diff --git a/gas/config/tc-i386.c b/gas/config/tc-i386.c
+index 0b98509e0d6..1a4791006fa 100644
+--- a/gas/config/tc-i386.c
++++ b/gas/config/tc-i386.c
+@@ -13003,6 +13003,29 @@ imm_size (unsigned int n)
+   return size;
+ }
+ 
++static void
++output_field_label (const expressionS *exp, char *field_start)
++{
++  symbolS *label = exp->X_field_label;
++  unsigned int line;
++  const char *file;
++
++  if (label == NULL)
++    return;
++
++  file = as_where (&line);
++
++  if (S_IS_DEFINED (label))
++    {
++      as_bad_where (file, line, _("field label `%s' is already defined"), S_GET_NAME (label));
++      return;
++    }
++
++  S_SET_SEGMENT (label, now_seg);
++  S_SET_VALUE (label, field_start - frag_now->fr_literal);
++  symbol_set_frag (label, frag_now);
++}
++
+ static void
+ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ {
+@@ -13024,6 +13047,7 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ 	      val = offset_in_range (val >> (size == 1 ? i.memshift : 0),
+ 				     size);
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].disps, p);
+ 	      md_number_to_chars (p, val, size);
+ 	    }
+ 	  else
+@@ -13062,6 +13086,7 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ 		}
+ 
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].disps, p);
+ 	      reloc_type = reloc (size, pcrel, sign, i.reloc[n]);
+ 	      if (GOT_symbol
+ 		  && GOT_symbol == i.op[n].disps->X_add_symbol
+@@ -13235,6 +13260,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
+ 	      val = offset_in_range (i.op[n].imms->X_add_number,
+ 				     size);
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].imms, p);
+ 	      md_number_to_chars (p, val, size);
+ 	    }
+ 	  else
+@@ -13256,6 +13282,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
+ 		sign = 0;
+ 
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].imms, p);
+ 	      reloc_type = reloc (size, 0, sign, i.reloc[n]);
+ 
+ 	      /*   This is tough to explain.  We end up with this one if we
+diff --git a/gas/expr.c b/gas/expr.c
+index 87824b0ca1a..3bf44ee9517 100644
+--- a/gas/expr.c
++++ b/gas/expr.c
+@@ -782,6 +782,55 @@ static void expr_copy (expressionS *dst, const expressionS *src)
+ # define md_register_arithmetic 1
+ #endif
+ 
++static bool
++parse_fieldlabel (expressionS *expressionP, enum expr_mode mode)
++{
++  char *label_name;
++  char c;
++
++  if (*input_line_pointer != '(')
++    return false;
++
++  ++input_line_pointer;
++  SKIP_WHITESPACE ();
++
++  expr (0, expressionP, mode);
++
++  if (*input_line_pointer != ',')
++    {
++      as_bad (_("expected comma in fieldlabel"));
++      expressionP->X_op = O_constant;
++      expressionP->X_add_number = 0;
++      expressionP->X_add_symbol = NULL;
++      expressionP->X_op_symbol = NULL;
++      expressionP->X_field_label = NULL;
++      return true;
++    }
++
++  ++input_line_pointer;
++  SKIP_WHITESPACE ();
++
++  c = get_symbol_name (&label_name);
++  if (!*label_name)
++    {
++      as_bad (_("expected symbol name in fieldlabel"));
++      restore_line_pointer (c);
++      expressionP->X_field_label = NULL;
++      return true;
++    }
++
++  expressionP->X_field_label = symbol_find_or_make (label_name);
++  restore_line_pointer (c);
++
++  SKIP_WHITESPACE ();
++  if (*input_line_pointer != ')')
++    as_bad (_("expected ')' after fieldlabel"));
++  else
++    ++input_line_pointer;
++
++  return true;
++}
++
+ /* In:	Input_line_pointer points to 1st char of operand, which may
+ 	be a space.
+ 
+@@ -1349,6 +1398,13 @@ operand (expressionS *expressionP, enum expr_mode mode)
+ 	  -- input_line_pointer;
+ 	  c = get_symbol_name (&name);
+ 
++	  if (strcmp (name, "fieldlabel") == 0)
++	    {
++	      restore_line_pointer (c);
++	      if (parse_fieldlabel (expressionP, mode))
++		break;
++	    }
++
+ #ifdef md_operator
+ 	  {
+ 	    op = md_operator (name, 1, &c);
+diff --git a/gas/expr.h b/gas/expr.h
+index 9097ff8b514..0c0f6c38335 100644
+--- a/gas/expr.h
++++ b/gas/expr.h
+@@ -141,6 +141,10 @@ typedef struct expressionS
+ 
+   /* Machine dependent field.  */
+   unsigned short X_md;
++
++  /* fieldlabel(EXPR, LABEL): LABEL names the first byte of the encoded
++     field that stores this expression.  */
++  symbolS *X_field_label;
+ } expressionS;
+ 
+ enum expr_mode
+-- 
+2.43.0
+
+
+From e33a2937503787bac797eb8dec6ee2fa13ee8cfe Mon Sep 17 00:00:00 2001
+From: York Jasper Niebuhr <yjn@yjn-systems.com>
+Date: Wed, 24 Jun 2026 13:53:30 +0200
+Subject: [PATCH 2/3] Added fieldlabel test
+
+This patch adds a simple test to validate whether field labels are
+inserted at the right offsets inside instructions.
+
+Signed-off-by: York Jasper Niebuhr <yjn@yjn-systems.com>
+---
+ gas/testsuite/gas/i386/i386.exp            |   2 +
+ gas/testsuite/gas/i386/x86-64-fieldlabel.d |   7 +
+ gas/testsuite/gas/i386/x86-64-fieldlabel.s | 148 +++++++++++++++++++++
+ 3 files changed, 157 insertions(+)
+ create mode 100644 gas/testsuite/gas/i386/x86-64-fieldlabel.d
+ create mode 100644 gas/testsuite/gas/i386/x86-64-fieldlabel.s
+
+diff --git a/gas/testsuite/gas/i386/i386.exp b/gas/testsuite/gas/i386/i386.exp
+index f63f5df703e..e933458db97 100644
+--- a/gas/testsuite/gas/i386/i386.exp
++++ b/gas/testsuite/gas/i386/i386.exp
+@@ -903,4 +903,6 @@ if {[is_elf_format] || [istarget "*-*-vxworks*"]} then {
+ 	&& ![istarget "*-*-netbsd*"]} then {
+ 	run_dump_test "svr4"
+     }
++
++	run_dump_test "x86-64-fieldlabel"
+ }
+diff --git a/gas/testsuite/gas/i386/x86-64-fieldlabel.d b/gas/testsuite/gas/i386/x86-64-fieldlabel.d
+new file mode 100644
+index 00000000000..91b32f064d8
+--- /dev/null
++++ b/gas/testsuite/gas/i386/x86-64-fieldlabel.d
+@@ -0,0 +1,7 @@
++#name: x86-64 fieldlabel
++#as: -L
++#objdump: -dr
++#target: x86_64-*-*
++
++.*: +file format .*
++#pass
+diff --git a/gas/testsuite/gas/i386/x86-64-fieldlabel.s b/gas/testsuite/gas/i386/x86-64-fieldlabel.s
+new file mode 100644
+index 00000000000..598da20fb9d
+--- /dev/null
++++ b/gas/testsuite/gas/i386/x86-64-fieldlabel.s
+@@ -0,0 +1,148 @@
++# Test fieldlabel(EXPR, LABEL) on x86-64 instruction fields.
++#
++# Each test has a normal label at the start of the instruction and an
++# assembler-time assertion that the field label is at the expected offset
++# from that instruction start.  This avoids depending on absolute offsets
++# in .text.
++
++	.text
++	.globl foo
++foo:
++
++# Constant immediates.
++t_imm8:
++	mov $fieldlabel(0x12, .Limm8), %al
++	.if .Limm8 - t_imm8 != 1
++	.error "imm8 -> operand label is at unexpected offset"
++	.endif
++
++t_imm16:
++	mov $fieldlabel(0x1234, .Limm16), %ax
++	.if .Limm16 - t_imm16 != 2
++	.error "imm16 -> operand label is at unexpected offset"
++	.endif
++
++t_imm32:
++	mov $fieldlabel(0x12345678, .Limm32), %eax
++	.if .Limm32 - t_imm32 != 1
++	.error "imm32 -> operand label is at unexpected offset"
++	.endif
++
++t_imm64_32enc:
++	mov $fieldlabel(0x12345678, .Limm64_32enc), %rax
++	.if .Limm64_32enc - t_imm64_32enc != 3
++	.error "imm64_32enc -> operand label is at unexpected offset"
++	.endif
++
++t_imm64:
++	movabs $fieldlabel(0x1122334455667788, .Limm64), %rax
++	.if .Limm64 - t_imm64 != 2
++	.error "imm64 -> operand label is at unexpected offset"
++	.endif
++
++# Relocatable immediates.
++t_relimm32:
++	mov $fieldlabel(bar, .Lrelimm32), %eax
++	.if .Lrelimm32 - t_relimm32 != 1
++	.error "relimm32 -> operand label is at unexpected offset"
++	.endif
++
++t_relimm64:
++	mov $fieldlabel(bar, .Lrelimm64), %rax
++	.if .Lrelimm64 - t_relimm64 != 3
++	.error "relimm64 -> operand label is at unexpected offset"
++	.endif
++
++t_relabs64:
++	movabs $fieldlabel(bar, .Lrelabs64), %rax
++	.if .Lrelabs64 - t_relabs64 != 2
++	.error "relabs64 -> operand label is at unexpected offset"
++	.endif
++
++# RIP-relative memory operands.
++t_ripdisp1:
++	mov fieldlabel(bar, .Lripdisp1)(%rip), %rax
++	.if .Lripdisp1 - t_ripdisp1 != 3
++	.error "ripdisp1 -> operand label is at unexpected offset"
++	.endif
++
++t_ripdisp2:
++	lea fieldlabel(bar, .Lripdisp2)(%rip), %rax
++	.if .Lripdisp2 - t_ripdisp2 != 3
++	.error "ripdisp2 -> operand label is at unexpected offset"
++	.endif
++
++# Base register + displacement.
++t_disp8:
++	mov fieldlabel(16, .Ldisp8)(%rax), %rbx
++	.if .Ldisp8 - t_disp8 != 3
++	.error "disp8 -> operand label is at unexpected offset"
++	.endif
++
++t_disp32:
++	mov fieldlabel(0x12345678, .Ldisp32)(%rax), %rbx
++	.if .Ldisp32 - t_disp32 != 3
++	.error "disp32 -> operand label is at unexpected offset"
++	.endif
++
++# Indexed addressing.
++t_indexdisp:
++	mov fieldlabel(0x20, .Lindexdisp)(%rax,%rcx,4), %rbx
++	.if .Lindexdisp - t_indexdisp != 4
++	.error "indexdisp -> operand label is at unexpected offset"
++	.endif
++
++# Immediate and displacement in the same instruction.
++t_both:
++	addq $fieldlabel(5, .Laddimm), fieldlabel(32, .Ladddisp)(%rax)
++	.if .Ladddisp - t_both != 3
++	.error "both -> destination operand label is at unexpected offset"
++	.endif
++	.if .Laddimm - t_both != 4
++	.error "both -> source operand label is at unexpected offset"
++	.endif
++
++# Multiple independent immediates.
++t_multi1:
++	mov $fieldlabel(1, .Lmulti1), %eax
++	.if .Lmulti1 - t_multi1 != 1
++	.error "multi1 -> operand label is at unexpected offset"
++	.endif
++
++t_multi2:
++	mov $fieldlabel(2, .Lmulti2), %ebx
++	.if .Lmulti2 - t_multi2 != 1
++	.error "multi2 -> operand label is at unexpected offset"
++	.endif
++
++t_multi3:
++	mov $fieldlabel(3, .Lmulti3), %ecx
++	.if .Lmulti3 - t_multi3 != 1
++	.error "multi3 -> operand label is at unexpected offset"
++	.endif
++
++	ret
++
++	.data
++	.quad .Limm8
++	.quad .Limm16
++	.quad .Limm32
++	.quad .Limm64_32enc
++	.quad .Limm64
++	.quad .Lrelimm32
++	.quad .Lrelimm64
++	.quad .Lrelabs64
++	.quad .Lripdisp1
++	.quad .Lripdisp2
++	.quad .Ldisp8
++	.quad .Ldisp32
++	.quad .Lindexdisp
++	.quad .Laddimm
++	.quad .Ladddisp
++	.quad .Lmulti1
++	.quad .Lmulti2
++	.quad .Lmulti3
++
++	.globl bar
++bar:
++	.quad 0
+-- 
+2.43.0
+
+
+From ea0e1a57c45ac3fb29eccb7458f3395c9e37e947 Mon Sep 17 00:00:00 2001
+From: York Jasper Niebuhr <yjn@yjn-systems.com>
+Date: Wed, 15 Jul 2026 15:57:12 +0200
+Subject: [PATCH 3/3] Added fieldlabel width constant definitions
+
+This patch extends the fieldlabel feature to make GAS also define a
+constant of the size of the labeled field.
+
+An example for the extended fieldlabel feature is:
+
+    movq $fieldlabel(42, .Lsome_label, .Lsome_width_label), %0
+
+This causes GAS to put the .Lsome_label directly onto the bytes that
+encode the immediate value 42. Additionally, GAS defines the
+.Lsome_width_label as a constant that is the size of the immediate
+field.
+
+The fieldlabel test is expanded to also test if the width constants are
+properly defined.
+
+Signed-off-by: York Jasper Niebuhr <yjn@yjn-systems.com>
+---
+ gas/config/tc-i386.c                       |  44 ++++++---
+ gas/expr.c                                 |  60 +++++++++---
+ gas/expr.h                                 |   6 +-
+ gas/testsuite/gas/i386/x86-64-fieldlabel.s | 106 +++++++++++++++++----
+ 4 files changed, 172 insertions(+), 44 deletions(-)
+
+diff --git a/gas/config/tc-i386.c b/gas/config/tc-i386.c
+index 1a4791006fa..f64606ccf57 100644
+--- a/gas/config/tc-i386.c
++++ b/gas/config/tc-i386.c
+@@ -13004,26 +13004,46 @@ imm_size (unsigned int n)
+ }
+ 
+ static void
+-output_field_label (const expressionS *exp, char *field_start)
++output_field_label (const expressionS *exp, char *field_start,
++                    unsigned int size)
+ {
+   symbolS *label = exp->X_field_label;
++  symbolS *width = exp->X_field_width;
+   unsigned int line;
+   const char *file;
+ 
+-  if (label == NULL)
++  if (label == NULL && width == NULL)
+     return;
+ 
+   file = as_where (&line);
+ 
+-  if (S_IS_DEFINED (label))
++  if (label != NULL)
+     {
+-      as_bad_where (file, line, _("field label `%s' is already defined"), S_GET_NAME (label));
+-      return;
++      if (S_IS_DEFINED (label) || symbol_equated_p (label))
++        as_bad_where (file, line,
++                      _("field label `%s' is already defined"),
++                      S_GET_NAME (label));
++      else
++        {
++          S_SET_SEGMENT (label, now_seg);
++          S_SET_VALUE (label, field_start - frag_now->fr_literal);
++          symbol_set_frag (label, frag_now);
++        }
+     }
+ 
+-  S_SET_SEGMENT (label, now_seg);
+-  S_SET_VALUE (label, field_start - frag_now->fr_literal);
+-  symbol_set_frag (label, frag_now);
++  if (width != NULL)
++    {
++      if (S_IS_DEFINED (width) || symbol_equated_p (width))
++        as_bad_where (file, line,
++                      _("field width symbol `%s' is already defined"),
++                      S_GET_NAME (width));
++      else
++        {
++          S_SET_SEGMENT (width, absolute_section);
++          S_SET_VALUE (width, size);
++          symbol_set_frag (width, &zero_address_frag);
++        }
++    }
+ }
+ 
+ static void
+@@ -13047,7 +13067,7 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ 	      val = offset_in_range (val >> (size == 1 ? i.memshift : 0),
+ 				     size);
+ 	      p = frag_more (size);
+-	      output_field_label (i.op[n].disps, p);
++	      output_field_label (i.op[n].disps, p, size);
+ 	      md_number_to_chars (p, val, size);
+ 	    }
+ 	  else
+@@ -13086,7 +13106,7 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ 		}
+ 
+ 	      p = frag_more (size);
+-	      output_field_label (i.op[n].disps, p);
++	      output_field_label (i.op[n].disps, p, size);
+ 	      reloc_type = reloc (size, pcrel, sign, i.reloc[n]);
+ 	      if (GOT_symbol
+ 		  && GOT_symbol == i.op[n].disps->X_add_symbol
+@@ -13260,7 +13280,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
+ 	      val = offset_in_range (i.op[n].imms->X_add_number,
+ 				     size);
+ 	      p = frag_more (size);
+-	      output_field_label (i.op[n].imms, p);
++	      output_field_label (i.op[n].imms, p, size);
+ 	      md_number_to_chars (p, val, size);
+ 	    }
+ 	  else
+@@ -13282,7 +13302,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
+ 		sign = 0;
+ 
+ 	      p = frag_more (size);
+-	      output_field_label (i.op[n].imms, p);
++	      output_field_label (i.op[n].imms, p, size);
+ 	      reloc_type = reloc (size, 0, sign, i.reloc[n]);
+ 
+ 	      /*   This is tough to explain.  We end up with this one if we
+diff --git a/gas/expr.c b/gas/expr.c
+index 3bf44ee9517..6a1658b1f7b 100644
+--- a/gas/expr.c
++++ b/gas/expr.c
+@@ -786,8 +786,12 @@ static bool
+ parse_fieldlabel (expressionS *expressionP, enum expr_mode mode)
+ {
+   char *label_name;
++  char *width_name;
+   char c;
+ 
++  expressionP->X_field_label = NULL;
++  expressionP->X_field_width = NULL;
++
+   if (*input_line_pointer != '(')
+     return false;
+ 
+@@ -796,15 +800,11 @@ parse_fieldlabel (expressionS *expressionP, enum expr_mode mode)
+ 
+   expr (0, expressionP, mode);
+ 
++  SKIP_WHITESPACE ();
+   if (*input_line_pointer != ',')
+     {
+-      as_bad (_("expected comma in fieldlabel"));
+-      expressionP->X_op = O_constant;
+-      expressionP->X_add_number = 0;
+-      expressionP->X_add_symbol = NULL;
+-      expressionP->X_op_symbol = NULL;
+-      expressionP->X_field_label = NULL;
+-      return true;
++      as_bad (_("expected comma after expression in fieldlabel"));
++      goto bad;
+     }
+ 
+   ++input_line_pointer;
+@@ -813,21 +813,52 @@ parse_fieldlabel (expressionS *expressionP, enum expr_mode mode)
+   c = get_symbol_name (&label_name);
+   if (!*label_name)
+     {
+-      as_bad (_("expected symbol name in fieldlabel"));
++      as_bad (_("expected field label name in fieldlabel"));
+       restore_line_pointer (c);
+-      expressionP->X_field_label = NULL;
+-      return true;
++      goto bad;
+     }
+ 
+   expressionP->X_field_label = symbol_find_or_make (label_name);
+   restore_line_pointer (c);
+ 
++  SKIP_WHITESPACE ();
++  if (*input_line_pointer != ',')
++    {
++      as_bad (_("expected comma after label in fieldlabel"));
++      goto bad;
++    }
++
++  ++input_line_pointer;
++  SKIP_WHITESPACE ();
++
++  c = get_symbol_name (&width_name);
++  if (!*width_name)
++    {
++      as_bad (_("expected width symbol name in fieldlabel"));
++      restore_line_pointer (c);
++      goto bad;
++    }
++
++  expressionP->X_field_width = symbol_find_or_make (width_name);
++  restore_line_pointer (c);
++
+   SKIP_WHITESPACE ();
+   if (*input_line_pointer != ')')
+-    as_bad (_("expected ')' after fieldlabel"));
+-  else
+-    ++input_line_pointer;
++    {
++      as_bad (_("expected ')' after fieldlabel"));
++      goto bad;
++    }
++
++  ++input_line_pointer;
++  return true;
+ 
++bad:
++  expressionP->X_op = O_constant;
++  expressionP->X_add_number = 0;
++  expressionP->X_add_symbol = NULL;
++  expressionP->X_op_symbol = NULL;
++  expressionP->X_field_label = NULL;
++  expressionP->X_field_width = NULL;
+   return true;
+ }
+ 
+@@ -853,6 +884,9 @@ operand (expressionS *expressionP, enum expr_mode mode)
+   memset (expressionP, 0, sizeof (*expressionP));
+ #endif
+ 
++  expressionP->X_field_label = NULL;
++  expressionP->X_field_width = NULL;
++
+   /* All integers are regarded as unsigned unless they are negated.
+      This is because the only thing which cares whether a number is
+      unsigned is the code in emit_expr which extends constants into
+diff --git a/gas/expr.h b/gas/expr.h
+index 0c0f6c38335..65eb177de62 100644
+--- a/gas/expr.h
++++ b/gas/expr.h
+@@ -142,9 +142,11 @@ typedef struct expressionS
+   /* Machine dependent field.  */
+   unsigned short X_md;
+ 
+-  /* fieldlabel(EXPR, LABEL): LABEL names the first byte of the encoded
+-     field that stores this expression.  */
++  /* fieldlabel(EXPR, LABEL, WIDTH):
++   LABEL names the first byte of the encoded field.
++   WIDTH is defined as the size of that field in bytes.  */
+   symbolS *X_field_label;
++  symbolS *X_field_width;
+ } expressionS;
+ 
+ enum expr_mode
+diff --git a/gas/testsuite/gas/i386/x86-64-fieldlabel.s b/gas/testsuite/gas/i386/x86-64-fieldlabel.s
+index 598da20fb9d..26ef5b027c9 100644
+--- a/gas/testsuite/gas/i386/x86-64-fieldlabel.s
++++ b/gas/testsuite/gas/i386/x86-64-fieldlabel.s
+@@ -11,115 +11,169 @@ foo:
+ 
+ # Constant immediates.
+ t_imm8:
+-	mov $fieldlabel(0x12, .Limm8), %al
++	mov $fieldlabel(0x12, .Limm8, .Limm8_width), %al
+ 	.if .Limm8 - t_imm8 != 1
+ 	.error "imm8 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Limm8_width != 1
++	.error "imm8 -> operand width is incorrect"
++	.endif
+ 
+ t_imm16:
+-	mov $fieldlabel(0x1234, .Limm16), %ax
++	mov $fieldlabel(0x1234, .Limm16, .Limm16_width), %ax
+ 	.if .Limm16 - t_imm16 != 2
+ 	.error "imm16 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Limm16_width != 2
++	.error "imm16 -> operand width is incorrect"
++	.endif
+ 
+ t_imm32:
+-	mov $fieldlabel(0x12345678, .Limm32), %eax
++	mov $fieldlabel(0x12345678, .Limm32, .Limm32_width), %eax
+ 	.if .Limm32 - t_imm32 != 1
+ 	.error "imm32 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Limm32_width != 4
++	.error "imm32 -> operand width is incorrect"
++	.endif
+ 
+ t_imm64_32enc:
+-	mov $fieldlabel(0x12345678, .Limm64_32enc), %rax
++	mov $fieldlabel(0x12345678, .Limm64_32enc, .Limm64_32enc_width), %rax
+ 	.if .Limm64_32enc - t_imm64_32enc != 3
+ 	.error "imm64_32enc -> operand label is at unexpected offset"
+ 	.endif
++	.if .Limm64_32enc_width != 4
++	.error "imm64_32enc -> operand width is incorrect"
++	.endif
+ 
+ t_imm64:
+-	movabs $fieldlabel(0x1122334455667788, .Limm64), %rax
++	movabs $fieldlabel(0x1122334455667788, .Limm64, .Limm64_width), %rax
+ 	.if .Limm64 - t_imm64 != 2
+ 	.error "imm64 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Limm64_width != 8
++	.error "imm64 -> operand width is incorrect"
++	.endif
+ 
+ # Relocatable immediates.
+ t_relimm32:
+-	mov $fieldlabel(bar, .Lrelimm32), %eax
++	mov $fieldlabel(bar, .Lrelimm32, .Lrelimm32_width), %eax
+ 	.if .Lrelimm32 - t_relimm32 != 1
+ 	.error "relimm32 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lrelimm32_width != 4
++	.error "relimm32 -> operand width is incorrect"
++	.endif
+ 
+ t_relimm64:
+-	mov $fieldlabel(bar, .Lrelimm64), %rax
++	mov $fieldlabel(bar, .Lrelimm64, .Lrelimm64_width), %rax
+ 	.if .Lrelimm64 - t_relimm64 != 3
+ 	.error "relimm64 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lrelimm64_width != 4
++	.error "relimm64 -> operand width is incorrect"
++	.endif
+ 
+ t_relabs64:
+-	movabs $fieldlabel(bar, .Lrelabs64), %rax
++	movabs $fieldlabel(bar, .Lrelabs64, .Lrelabs64_width), %rax
+ 	.if .Lrelabs64 - t_relabs64 != 2
+ 	.error "relabs64 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lrelabs64_width != 8
++	.error "relabs64 -> operand width is incorrect"
++	.endif
+ 
+ # RIP-relative memory operands.
+ t_ripdisp1:
+-	mov fieldlabel(bar, .Lripdisp1)(%rip), %rax
++	mov fieldlabel(bar, .Lripdisp1, .Lripdisp1_width)(%rip), %rax
+ 	.if .Lripdisp1 - t_ripdisp1 != 3
+ 	.error "ripdisp1 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lripdisp1_width != 4
++	.error "ripdisp1 -> operand width is incorrect"
++	.endif
+ 
+ t_ripdisp2:
+-	lea fieldlabel(bar, .Lripdisp2)(%rip), %rax
++	lea fieldlabel(bar, .Lripdisp2, .Lripdisp2_width)(%rip), %rax
+ 	.if .Lripdisp2 - t_ripdisp2 != 3
+ 	.error "ripdisp2 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lripdisp2_width != 4
++	.error "ripdisp2 -> operand width is incorrect"
++	.endif
+ 
+ # Base register + displacement.
+ t_disp8:
+-	mov fieldlabel(16, .Ldisp8)(%rax), %rbx
++	mov fieldlabel(16, .Ldisp8, .Ldisp8_width)(%rax), %rbx
+ 	.if .Ldisp8 - t_disp8 != 3
+ 	.error "disp8 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Ldisp8_width != 1
++	.error "disp8 -> operand width is incorrect"
++	.endif
+ 
+ t_disp32:
+-	mov fieldlabel(0x12345678, .Ldisp32)(%rax), %rbx
++	mov fieldlabel(0x12345678, .Ldisp32, .Ldisp32_width)(%rax), %rbx
+ 	.if .Ldisp32 - t_disp32 != 3
+ 	.error "disp32 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Ldisp32_width != 4
++	.error "disp32 -> operand width is incorrect"
++	.endif
+ 
+ # Indexed addressing.
+ t_indexdisp:
+-	mov fieldlabel(0x20, .Lindexdisp)(%rax,%rcx,4), %rbx
++	mov fieldlabel(0x20, .Lindexdisp, .Lindexdisp_width)(%rax,%rcx,4), %rbx
+ 	.if .Lindexdisp - t_indexdisp != 4
+ 	.error "indexdisp -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lindexdisp_width != 1
++	.error "indexdisp -> operand width is incorrect"
++	.endif
+ 
+ # Immediate and displacement in the same instruction.
+ t_both:
+-	addq $fieldlabel(5, .Laddimm), fieldlabel(32, .Ladddisp)(%rax)
++	addq $fieldlabel(5, .Laddimm, .Laddimm_width), fieldlabel(32, .Ladddisp, .Ladddisp_width)(%rax)
+ 	.if .Ladddisp - t_both != 3
+ 	.error "both -> destination operand label is at unexpected offset"
+ 	.endif
+ 	.if .Laddimm - t_both != 4
+ 	.error "both -> source operand label is at unexpected offset"
+ 	.endif
++	.if .Ladddisp_width != 1
++	.error "both -> destination operand width is incorrect"
++	.endif
++	.if .Laddimm_width != 1
++	.error "both -> source operand width is incorrect"
++	.endif
+ 
+ # Multiple independent immediates.
+ t_multi1:
+-	mov $fieldlabel(1, .Lmulti1), %eax
++	mov $fieldlabel(1, .Lmulti1, .Lmulti1_width), %eax
+ 	.if .Lmulti1 - t_multi1 != 1
+ 	.error "multi1 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lmulti1_width != 4
++	.error "multi1 -> operand width is incorrect"
++	.endif
+ 
+ t_multi2:
+-	mov $fieldlabel(2, .Lmulti2), %ebx
++	mov $fieldlabel(2, .Lmulti2, .Lmulti2_width), %ebx
+ 	.if .Lmulti2 - t_multi2 != 1
+ 	.error "multi2 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lmulti2_width != 4
++	.error "multi2 -> operand width is incorrect"
++	.endif
+ 
+ t_multi3:
+-	mov $fieldlabel(3, .Lmulti3), %ecx
++	mov $fieldlabel(3, .Lmulti3, .Lmulti3_width), %ecx
+ 	.if .Lmulti3 - t_multi3 != 1
+ 	.error "multi3 -> operand label is at unexpected offset"
+ 	.endif
++	.if .Lmulti3_width != 4
++	.error "multi3 -> operand width is incorrect"
++	.endif
+ 
+ 	ret
+ 
+@@ -142,6 +196,24 @@ t_multi3:
+ 	.quad .Lmulti1
+ 	.quad .Lmulti2
+ 	.quad .Lmulti3
++	.quad .Limm8_width
++	.quad .Limm16_width
++	.quad .Limm32_width
++	.quad .Limm64_32enc_width
++	.quad .Limm64_width
++	.quad .Lrelimm32_width
++	.quad .Lrelimm64_width
++	.quad .Lrelabs64_width
++	.quad .Lripdisp1_width
++	.quad .Lripdisp2_width
++	.quad .Ldisp8_width
++	.quad .Ldisp32_width
++	.quad .Lindexdisp_width
++	.quad .Laddimm_width
++	.quad .Ladddisp_width
++	.quad .Lmulti1_width
++	.quad .Lmulti2_width
++	.quad .Lmulti3_width
+ 
+ 	.globl bar
+ bar:
+-- 
+2.43.0
+

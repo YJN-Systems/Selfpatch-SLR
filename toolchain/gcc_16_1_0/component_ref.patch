@@ -1,5 +1,5 @@
 From 7f4bdf93db513510aaada7cff9592070b58646e5 Mon Sep 17 00:00:00 2001
-From: York Jasper Niebuhr <yjnworkstation@gmail.com>
+From: York Jasper Niebuhr <yjn@yjn-systems.com>
 Date: Fri, 17 Oct 2025 22:04:41 +0200
 Subject: [PATCH] c-family, c, plugin: Add PLUGIN_BUILD_COMPONENT_REF callback
 MIME-Version: 1.0
@@ -42,7 +42,7 @@ casts the unfolded expression to the desired output type.
 If the callback is not used to alter COMPONENT_REF trees, there is **no
 change** in GCC’s behavior.
 
-Signed-off-by: York Jasper Niebuhr <yjnworkstation@gmail.com>
+Signed-off-by: York Jasper Niebuhr <yjn@yjn-systems.com>
 ---
  gcc/c-family/c-common.cc | 48 +++++++++++++++++++++++++++++++---------
  gcc/c-family/c-common.h  |  3 ++-

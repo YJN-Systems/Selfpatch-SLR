@@ -15,14 +15,41 @@ This README provides the build instructions for the required custom toolchain an
 
 ## Building the Custom GCC Toolchain
 
-The current SPSLR implementation requires minor changes to mainline GCC. This repository provides the corresponding patch at [`gcc_patches/gcc16/gcc_component_ref.patch`](https://github.com/YJN-Systems/Selfpatch-SLR/tree/main/gcc_patches/gcc16/gcc_component_ref.patch). Use this patch file to build a GCC version compatible with SPSLR:
+The current SPSLR implementation requires minor changes to mainline GCC and the GNU assembler (GAS). This repository provides the corresponding patches at [`toolchain/gcc_16_1_0/component_ref.patch`](https://github.com/YJN-Systems/Selfpatch-SLR/tree/main/toolchain/gcc_16_1_0/component_ref.patch) and [`toolchain/gas_2_46_1/fieldlabel.patch`](https://github.com/YJN-Systems/Selfpatch-SLR/tree/main/toolchain/gas_2_46_1/fieldlabel.patch).
+
+Use the GAS patch to build an assembler that supports the pinpoint plugin's output:
+
+```bash
+git clone git://sourceware.org/git/binutils-gdb.git
+cd binutils-gdb
+
+git switch -c gas-2.46.1-spslr binutils-2_46_1
+git am /path/to/selfpatch-slr/toolchain/gas_2_46_1/fieldlabel.patch
+
+cd ..
+
+mkdir gas-build
+cd gas-build
+
+../binutils-gdb/configure \
+  --target=x86_64-linux-gnu \
+  --program-transform-name='s/^as$/gas-spslr/' \
+  --disable-gdb \
+  --disable-gprof \
+  --disable-sim \
+  --disable-gdbserver
+make -j$(nproc) all-gas
+sudo make install-gas
+```
+
+And use the GCC patch to build a compiler that can host pinpoint:
 
 ```bash
 git clone git://gcc.gnu.org/git/gcc.git
 cd gcc
 
-git switch -c gcc-16-spslr releases/gcc-16.1.0
-git am /path/to/selfpatch-slr/gcc_component_ref.patch
+git switch -c gcc-16.1.0-spslr releases/gcc-16.1.0
+git am /path/to/selfpatch-slr/toolchain/gcc_16_1_0/component_ref.patch
 
 cd ..
 
@@ -40,7 +67,9 @@ cd gcc-build
   --disable-bootstrap \
   --disable-libsanitizer \
   --disable-libquadmath \
-  --disable-libvtv
+  --disable-libvtv \
+  --with-gnu-as \
+  --with-as=/usr/local/bin/gas-spslr
 
 make -j$(nproc)
 sudo make install
@@ -49,9 +78,10 @@ sudo ln -s /usr/local/gcc-spslr/bin/gcc-spslr /usr/local/bin/gcc-spslr
 sudo ln -s /usr/local/gcc-spslr/bin/g++-spslr /usr/local/bin/g++-spslr
 ```
 
-To verify the installation, try:
+To verify the installations, try:
 
 ```bash
+gas-spslr --version
 gcc-spslr --version
 g++-spslr --version
 ```

@@ -1,4 +1,5 @@
 #include <spslr.h>
+#include <sanemaker/traps.h>
 
 #include "spslr_randomizer.h"
 #include "spslr_env.h"
@@ -96,9 +97,13 @@ struct spslr_status __init spslr_init(void)
 	}
 #endif
 
-	if (spslr_randomize() < 0)
-		return (struct spslr_status){ .viability = viable,
-					      .error = SPSLR_ERROR_RANDOMIZE };
+	if (sanemaker_fetch(SANEMAKER_FETCH_SPSLR_ENABLED, 1)) {
+		if (spslr_randomize() < 0)
+			return (struct spslr_status){
+				.viability = viable,
+				.error = SPSLR_ERROR_RANDOMIZE
+			};
+	}
 
 #ifdef SPSLR_SANITY_CHECK
 	for (spslr_u64 tidx = 0; tidx < spslr_target_cnt; tidx++) {
@@ -278,11 +283,14 @@ static struct spslr_status spslr_patch(const struct spslr_ctx *ctx)
 
 	via = SPSLR_NONVIABLE;
 
-	for (const struct spslr_unit *unit = start_units; unit != stop_units;
-	     unit++) {
-		err = spslr_patch_unit(unit, target_map_buffer, reorder_buffer);
-		if (err != SPSLR_OK)
-			goto finish;
+	if (sanemaker_fetch(SANEMAKER_FETCH_SPSLR_ENABLED, 1)) {
+		for (const struct spslr_unit *unit = start_units;
+		     unit != stop_units; unit++) {
+			err = spslr_patch_unit(unit, target_map_buffer,
+					       reorder_buffer);
+			if (err != SPSLR_OK)
+				goto finish;
+		}
 	}
 
 	via = SPSLR_VIABLE;
@@ -342,6 +350,7 @@ finish:
 	if (host_ctx.workspace)
 		spslr_env_free(host_ctx.workspace, host_workspace_size);
 
+	sanemaker_signal(SANEMAKER_SIGNAL_PATCH_BOUNDARY);
 	return (struct spslr_status){ .viability = viable, .error = err };
 }
 
@@ -436,17 +445,32 @@ static int spslr_patch_dpin(void *addr, spslr_u64 target, void *reorder_buffer)
 	if (target >= spslr_target_cnt)
 		return -1;
 
+	int res = -1;
 	const struct spslr_target *t = &spslr_targets[target];
+
+	sanemaker_signal(SANEMAKER_SIGNAL_PAUSE);
 
 	spslr_env_memset(reorder_buffer, 0, t->layout->size);
 
 	if (reorder_object(reorder_buffer, addr, target) < 0)
-		return -1;
+		goto finish;
 
 	if (spslr_env_poke_data(addr, reorder_buffer, t->layout->size) < 0)
-		return -1;
+		goto finish;
 
-	return 0;
+	res = 0;
+finish:
+	sanemaker_signal(SANEMAKER_SIGNAL_RESUME);
+	return res;
+}
+
+static int spslr_ipin_value_fits(spslr_u64 value, spslr_u64 size)
+{
+	if (size == 0)
+		return 0;
+
+	spslr_u64 bound = (spslr_u64)1 << (8 * size);
+	return value < bound;
 }
 
 static int spslr_patch_ipins(const struct spslr_ipin *ipins, spslr_u64 cnt,
@@ -457,6 +481,10 @@ static int spslr_patch_ipins(const struct spslr_ipin *ipins, spslr_u64 cnt,
 
 		spslr_s64 value;
 		if (spslr_calculate_ipin_value(ip->expr, &value, tmap) < 0)
+			return -1;
+
+		if (value < 0 ||
+		    !spslr_ipin_value_fits((spslr_u64)value, ip->size))
 			return -1;
 
 		/*

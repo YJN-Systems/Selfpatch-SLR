@@ -54,4 +54,21 @@ struct spslr_status spslr_selfpatch(void);
 unsigned long spslr_workspace_size(const struct spslr_entry *entry);
 struct spslr_status spslr_patch_module(const struct spslr_ctx *m);
 
+/* Use spslr_target_hash(type) to get a pointer to the 16 byte md5 hash
+   of the target type. If type is not an SPSLR target, NULL is returned. */
+
+extern const unsigned char *__spslr_target_hash(const void *);
+
+#define __SPSLR_CAT2(a, b) a##b
+#define __SPSLR_CAT(a, b) __SPSLR_CAT2(a, b)
+
+#define __spslr_target_hash_impl(T, n)                                      \
+	({                                                                  \
+		extern T __SPSLR_CAT(__spslr_target_hash_type_anchor_, n);  \
+		__spslr_target_hash(                                        \
+			&__SPSLR_CAT(__spslr_target_hash_type_anchor_, n)); \
+	})
+
+#define spslr_target_hash(T) __spslr_target_hash_impl(T, __COUNTER__)
+
 #endif

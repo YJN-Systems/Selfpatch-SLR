@@ -18,18 +18,6 @@ struct spslr_target_field;
 typedef const struct spslr_target *spslr_target_ref;
 
 /*
- * Root metadata header for one linked subject, such as the kernel image or a
- * module. Emitted in spslr_entry and COMDAT-deduplicated so each subject has
- * one usable entry point.
- */
-struct spslr_hdr {
-	const struct spslr_unit *units_start;
-	const struct spslr_unit *units_stop;
-	const struct spslr_target *targets_start;
-	const struct spslr_target *targets_stop;
-} __packed;
-
-/*
  * Metadata for one compilation unit. The target array is CU-local and maps
  * unit_target_idx values used by pins to deduplicated global target headers.
  */
@@ -64,7 +52,7 @@ struct spslr_ipin_expr {
 
 /* Deduplicated target type descriptor, keyed by deterministic layout hash. */
 struct spslr_target {
-	char hash[16];
+	unsigned char hash[16];
 	const char *name;
 	const struct spslr_target_layout *layout;
 } __packed;

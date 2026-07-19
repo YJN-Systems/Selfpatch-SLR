@@ -57,4 +57,16 @@ static inline void list_add_tail(struct list_head *node, struct list_head *head)
 	head->prev = node;
 }
 
+static inline void list_del(struct list_head *node)
+{
+	struct list_head *next = node->next;
+	struct list_head *prev = node->prev;
+
+	prev->next = next;
+	next->prev = prev;
+
+	node->next = node;
+	node->prev = node;
+}
+
 #endif

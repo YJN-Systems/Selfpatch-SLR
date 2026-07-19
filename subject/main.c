@@ -1,11 +1,17 @@
+#define _GNU_SOURCE
+
 #include "task.h"
 
-#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+
+#include <link.h>
+#include <dlfcn.h>
 
 #include <spslr.h>
+#include <sanemaker/traps.h>
 
 typedef void (*module_report_fn)(struct list_head *task_list);
 
@@ -68,6 +74,8 @@ static struct task_struct *task_alloc(int pid, int ppid, const char *comm,
 		exit(EXIT_FAILURE);
 	}
 
+	sanemaker_target_tag(task, struct task_struct);
+
 	task->pid = pid;
 	task->ppid = ppid;
 	snprintf(task->comm, sizeof(task->comm), "%s", comm);
@@ -101,6 +109,27 @@ static void build_task_list(void)
 	list_add_tail(&sshd->tasks, &system_task_list);
 	list_add_tail(&shell->tasks, &system_task_list);
 	list_add_tail(&demo->tasks, &system_task_list);
+}
+
+static void destroy_dynamic_tasks(void)
+{
+	struct list_head *pos = system_task_list.next;
+
+	while (pos != &system_task_list) {
+		struct list_head *next = pos->next;
+		struct task_struct *task =
+			list_entry(pos, struct task_struct, tasks);
+
+		if (task != &init_task && task != &kworker_task) {
+			list_del(&task->tasks);
+			sanemaker_target_untag(task);
+			free(task);
+		}
+
+		pos = next;
+	}
+
+	INIT_LIST_HEAD(&system_task_list);
 }
 
 static struct task_struct *find_task(struct list_head *task_list, int pid)
@@ -182,6 +211,86 @@ static int fetch_spslr_entry(void *handle, struct spslr_entry *entry)
 	return 0;
 }
 
+static void sanemaker_register_image_phdrs(const char *name, uintptr_t base,
+					   const ElfW(Phdr) * phdrs,
+					   ElfW(Half) phnum)
+{
+	if (!name || !name[0])
+		return;
+
+	sanemaker_new_image(name, (const void *)base);
+
+	for (ElfW(Half) i = 0; i < phnum; i++) {
+		const ElfW(Phdr) *phdr = &phdrs[i];
+
+		if (phdr->p_type != PT_LOAD)
+			continue;
+
+		if (!(phdr->p_flags & PF_X))
+			continue;
+
+		const void *begin = (const void *)(base + phdr->p_vaddr);
+		const void *end =
+			(const void *)(base + phdr->p_vaddr + phdr->p_memsz);
+
+		sanemaker_new_image_text(name, begin, end);
+	}
+}
+
+static void sanemaker_deregister_link_map_image(struct link_map *lm)
+{
+	if (!lm || !lm->l_name)
+		return;
+
+	const char *name = lm->l_name;
+	sanemaker_drop_image(name);
+}
+
+static int sanemaker_register_image_handle(void *handle)
+{
+	struct link_map *lm = NULL;
+
+	if (dlinfo(handle, RTLD_DI_LINKMAP, &lm) != 0 || !lm)
+		return -1;
+
+	ElfW(Ehdr) *ehdr = (ElfW(Ehdr) *)lm->l_addr;
+	ElfW(Phdr) *phdrs = (ElfW(Phdr) *)((uintptr_t)ehdr + ehdr->e_phoff);
+
+	sanemaker_register_image_phdrs(lm->l_name, (uintptr_t)lm->l_addr, phdrs,
+				       ehdr->e_phnum);
+
+	return 0;
+}
+
+static int sanemaker_deregister_image_handle(void *handle)
+{
+	struct link_map *lm = NULL;
+
+	if (dlinfo(handle, RTLD_DI_LINKMAP, &lm) != 0 || !lm)
+		return -1;
+
+	sanemaker_deregister_link_map_image(lm);
+	return 0;
+}
+
+static int sanemaker_register_loaded_image_cb(struct dl_phdr_info *info,
+					      size_t size, void *data)
+{
+	(void)size;
+	(void)data;
+
+	sanemaker_register_image_phdrs(info->dlpi_name,
+				       (uintptr_t)info->dlpi_addr,
+				       info->dlpi_phdr, info->dlpi_phnum);
+
+	return 0;
+}
+
+static int sanemaker_register_loaded_images(void)
+{
+	return dl_iterate_phdr(sanemaker_register_loaded_image_cb, NULL);
+}
+
 static int run_module_report(const char *module_path,
 			     struct list_head *task_list)
 {
@@ -230,7 +339,14 @@ static int run_module_report(const char *module_path,
 		return -1;
 	}
 
+	if (sanemaker_register_image_handle(handle) != 0) {
+		fprintf(stderr, "warning: failed to register image %s\n",
+			module_path);
+	}
+
 	report(task_list);
+
+	sanemaker_deregister_image_handle(handle);
 
 	dlclose(handle);
 	return 0;
@@ -238,7 +354,7 @@ static int run_module_report(const char *module_path,
 
 static void print_task_struct_layout(void)
 {
-	puts("== task_struct layout ==");
+	puts("\n== task_struct layout ==");
 	printf("sizeof(struct task_struct): %zu\n", sizeof(struct task_struct));
 	printf("pid:     offset %-3zu size %zu\n",
 	       offsetof(struct task_struct, pid),
@@ -261,7 +377,12 @@ static void print_task_struct_layout(void)
 	printf("tasks:   offset %-3zu size %zu\n",
 	       offsetof(struct task_struct, tasks),
 	       sizeof(((struct task_struct *)0)->tasks));
-	putchar('\n');
+}
+
+__attribute__((noinline)) char read_at_13(const struct task_struct *task)
+{
+	const char *bytes = (const char *)task;
+	return bytes[13];
 }
 
 int main(int argc, char **argv)
@@ -271,6 +392,20 @@ int main(int argc, char **argv)
 			argv[0]);
 		return EXIT_FAILURE;
 	}
+
+	if (sanemaker_register_loaded_images() != 0)
+		fprintf(stderr, "warning: failed to register loaded images\n");
+
+	sanemaker_target_tag(&init_task, struct task_struct);
+	sanemaker_target_tag(&kworker_task, struct task_struct);
+
+	const unsigned char *task_struct_hash =
+		spslr_target_hash(struct task_struct);
+	printf("The task_struct hash is at %p\n  Its value is: ",
+	       task_struct_hash);
+	for (unsigned i = 0; i < 16; i++)
+		printf("%02x", task_struct_hash[i]);
+	printf("\n");
 
 	struct spslr_status status = spslr_init();
 	if (status.error != SPSLR_OK) {
@@ -288,7 +423,7 @@ int main(int argc, char **argv)
 
 	build_task_list();
 
-	puts("== task table before scheduler tick ==");
+	puts("\n== task table before scheduler tick ==");
 	print_tasks(&system_task_list);
 
 	simulate_tick(&system_task_list);
@@ -310,6 +445,14 @@ int main(int argc, char **argv)
 	puts("\n== init_task rvalue field access ==");
 	printf("copy_init_task().comm=\"%s\" (should be \"init\")\n",
 	       copy_init_task().comm);
+
+	destroy_dynamic_tasks();
+
+	char invalid_read = read_at_13(&init_task);
+	printf("\nUninstrumented read yields %x\n", invalid_read & 0xff);
+
+	sanemaker_target_untag(&init_task);
+	sanemaker_target_untag(&kworker_task);
 
 	return EXIT_SUCCESS;
 }

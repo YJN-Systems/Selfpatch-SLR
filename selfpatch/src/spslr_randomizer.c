@@ -3,6 +3,8 @@
 #include "spslr_env.h"
 #include "pinpoint.h"
 
+#include <sanemaker/traps.h>
+
 /*
  * Target layout randomizer.
  *
@@ -38,6 +40,7 @@ static int init_fields_buffer(void);
 
 static const struct spslr_target_field *meta_original_field(spslr_u64 target,
 							    spslr_u64 field);
+static struct Field *state_current_field_base(spslr_u64 target);
 static struct Field *state_current_field(spslr_u64 target, spslr_u64 field);
 
 static int __init init_field_base_indices(void)
@@ -70,18 +73,27 @@ static const struct spslr_target_field *meta_original_field(spslr_u64 target,
 	return layout->fields + field;
 }
 
-static struct Field *state_current_field(spslr_u64 target, spslr_u64 field)
+static struct Field *state_current_field_base(spslr_u64 target)
 {
 	if (target >= spslr_target_cnt)
 		return NULL;
 
 	spslr_u64 field_base_idx = field_base_indices[target];
-	const struct spslr_target_layout *layout = spslr_targets[target].layout;
+	return fields + field_base_idx;
+}
 
-	if (field >= layout->field_cnt)
+static struct Field *state_current_field(spslr_u64 target, spslr_u64 field)
+{
+	if (target >= spslr_target_cnt)
 		return NULL;
 
-	return fields + field_base_idx + field;
+	struct Field *field_base = state_current_field_base(target);
+	const struct spslr_target_layout *layout = spslr_targets[target].layout;
+
+	if (!field_base || field >= layout->field_cnt)
+		return NULL;
+
+	return field_base + field;
 }
 
 static int __init init_fields_buffer(void)
@@ -201,7 +213,7 @@ int __init spslr_randomizer_validate_target(spslr_u64 target)
 			    &finfo) < 0)
 			return -1;
 
-		if (finfo.offset < cur_end)
+		if (finfo.alignment == 0)
 			return -1;
 
 		if (finfo.offset % finfo.alignment != 0)
@@ -211,7 +223,18 @@ int __init spslr_randomizer_validate_target(spslr_u64 target)
 		    finfo.offset != finfo.initial_offset)
 			return -1;
 
-		if (finfo.offset + finfo.size > tsize)
+		if (finfo.offset > tsize)
+			return -1;
+
+		/* Zero-sized metadata entries occupy no storage. */
+		if (finfo.size == 0)
+			continue;
+
+		if (finfo.offset < cur_end)
+			return -1;
+
+		/* Avoid overflow in offset + size. */
+		if (finfo.size > tsize - finfo.offset)
 			return -1;
 
 		cur_end = finfo.offset + finfo.size;
@@ -322,6 +345,21 @@ static int __init option_is_valid(spslr_u64 target, spslr_u64 origin_final_idx,
 		if (it == origin_final_idx)
 			continue;
 
+		/*
+		 * Zero-sized metadata entries occupy no storage, but they still
+		 * mark an ordering boundary. A moved field must neither straddle
+		 * one nor start at one: equal-offset entries have an ordering
+		 * relationship that do_swap() does not preserve while displacing
+		 * fields.
+         */
+		if (of->size == 0) {
+			if (rf->offset >= offset &&
+			    rf->offset < option_would_end)
+				return 0;
+
+			continue;
+		}
+
 		// Field ends before target region -> must not be moved to origin region
 		if (rf->offset + of->size <= offset)
 			continue;
@@ -409,6 +447,10 @@ static void __init do_swap(spslr_u64 target, spslr_u64 origin_idx,
 
 		const struct spslr_target_field *itof =
 			meta_original_field(target, itf->oidx);
+
+		// Zero-sized metadata entries occupy no storage.
+		if (itof->size == 0)
+			continue;
 
 		if (itf->offset + itof->size <= new_offset)
 			continue;
@@ -562,6 +604,10 @@ static void __init shuffle_one_target(spslr_u64 target)
 	const struct spslr_target_field *origin_of =
 		meta_original_field(target, origin_rf->oidx);
 
+	/* Zero-sized entries are metadata markers, not shuffleable storage. */
+	if (origin_of->size == 0)
+		return;
+
 	if (origin_of->flags & SPSLR_FLAG_FIELD_FIXED)
 		return;
 
@@ -584,6 +630,8 @@ static void __init shuffle_target(spslr_u64 target)
 
 	for (spslr_u64 i = 0; i < shuffle_count; i++)
 		shuffle_one_target(target);
+
+	sanemaker_finish_layout(state_current_field_base(target), t->hash);
 }
 
 int __init spslr_randomize(void)

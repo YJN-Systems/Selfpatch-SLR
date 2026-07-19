@@ -192,8 +192,7 @@ ffffffff813c76c2: 0f 8f 19 03 00 00     jg   ffffffff813c79e1 &lt;rcu_note_conte
                     Delaying instrumentation avoids tracing the decompressor and early boot loader
                     code, substantially reducing the runtime of the baseline recording while still
                     capturing the complete kernel initialization sequence. Note that the entire
-                    boot may still take more than 10 minutes to complete with this version of
-                    Sanemaker.</p>
+                    boot may still take up to a minute with this version of Sanemaker.</p>
                     <p>After QEMU exits, merge the generated logs into <code>baseline.json</code>
                     using <code>logmerge.py</code>.</p>
                     <h3 id="spslr-run">SPSLR run</h3>

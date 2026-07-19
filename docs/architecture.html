@@ -22,9 +22,21 @@
         "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
         aria-expanded="false" aria-controls="site-nav">Menu</button>
         <nav id="site-nav" class="site-nav" aria-label="Main navigation">
-            <a href="index.html">Overview</a> <a href="architecture.html" aria-current=
-            "page">Architecture</a> <a href="bootpatch-slr.html">Bootpatch-SLR</a> <a href=
-            "discussion.html">Discussion</a>
+            <a href="index.html">Getting Started</a> <a href="architecture.html" aria-current=
+            "page">Architecture</a> <a href="sanemaker.html">Sanemaker</a> <a href=
+            "bootpatch-slr.html">Bootpatch-SLR</a> <a href="discussion.html">Discussion</a>
+            <a href="blog/index.html">Blog</a>
+            <details class="nav-dropdown">
+                <summary class="repo-link">
+                    Code();
+                </summary>
+                <div class="dropdown-menu">
+                    <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                    "">Selfpatch-SLR</a> <a href="https://github.com/YJN-Systems/Bootpatch-SLR"
+                    data-external="">Bootpatch-SLR</a> <a href=
+                    "https://github.com/YJN-Systems/Sanemaker" data-external="">Sanemaker</a>
+                </div>
+            </details>
         </nav>
     </header>
     <main class="layout">
@@ -48,11 +60,10 @@
                 <p><code>pinpoint</code> is the compiler-side component of SPSLR. It runs as a
                 staged GCC plugin because no single GCC representation contains all information
                 required for runtime structure layout randomization. Early frontend hooks still
-                know which source-level field is being accessed. Later optimization passes decide
-                which offset computations survive. Final RTL exposes the concrete register
-                allocation and instruction stream that must be patched. In the end, pinpoint emits
-                SPSLR metadata directly into ELF sections of the generated object file. These
-                sections become the interface consumed by <code>selfpatch</code>.</p>
+                know which source-level field is being accessed, while later compilation stages
+                expose the final code locations that must be patched. Pinpoint emits SPSLR metadata
+                directly into ELF sections of the generated object file. These sections become the
+                interface consumed by <code>selfpatch</code>.</p>
                 <h3>Target discovery</h3>
                 <p>Target structures are selected with <code>__attribute__((spslr))</code>. When
                 GCC registers such a type, pinpoint records it as a compilation-unit-local target.
@@ -81,15 +92,17 @@
                 expressions while the frontend still knows that an expression is a field access.
                 When pinpoint sees a field access into an SPSLR target, it rewrites the access into
                 explicit pointer arithmetic whose offset is produced by a synthetic separator
-                expression.</p>
+                expression associated with an entry in pinpoint's instruction-pin registry.</p>
                 <p>Conceptually, a source-level access like this:</p>
                 <pre><code class="language-c">obj-&gt;field</code></pre>
                 <p>is transformed into something equivalent to:</p>
                 <pre><code class="language-c">*(typeof(obj-&gt;field) *)((char *)obj +
-    __spslr_offsetof(target_uid, field_offset))</code></pre>
-                <p>The separator is not a runtime call. It is a compiler-internal marker carrying
-                two constants: the compilation-unit-local target ID and the original field offset.
-                Later pinpoint passes must remove every separator before final code generation.</p>
+    __spslr_offsetof(instruction_pin_id))</code></pre>
+                <p>The separator is not a runtime call. It is a compiler-internal marker carrying a
+                unique instruction-pin ID. Pinpoint's internal registry associates that ID with the
+                referenced target field, from which the target identity, original field offset, and
+                eventual metadata expression can be recovered. Later pinpoint passes must remove
+                every separator before final code generation.</p>
                 <p>Mainline GCC folds many <code>offsetof</code>-like expressions while parsing,
                 before the earliest ordinary plugin hooks can inspect them. This causes important
                 access information to be unobtainable by any GCC plugin. To address this issue,
@@ -114,71 +127,64 @@
                 Conceptually, the access becomes:</p>
                 <pre><code class="language-c">*(typeof(outer.elems[i].inner.value) *)(
     (char *)&amp;outer
-    + __spslr_offsetof(OUTER_ID, ELEMS_OFFSET)
+    + __spslr_offsetof(PIN_42)
     + sizeof(struct elem) * i
-    + __spslr_offsetof(ELEM_ID, INNER_OFFSET)
+    + __spslr_offsetof(PIN_43)
     + offsetof(struct inner, value)
 )</code></pre>
                 <p>Each randomized target offset now appears as a separate compiler-visible
-                expression that carries both the target identity and the original field offset.
-                Later pinpoint passes transform these separator expressions into patchable
-                instruction pins.</p>
-                <h3>Stage 1: asm markers</h3>
-                <p>The second GIMPLE pass, <code>asm_offset</code>, replaces separator calls with
-                synthetic inline-assembly markers. These markers still do not contain the final
-                machine code. Their purpose is to keep the offset value alive as a real data
-                dependency while giving GCC freedom to choose the destination register to hold
-                it.</p>
-                <p>Thus, each asm marker has one register output and two immediate inputs:</p>
+                expression carrying a unique instruction-pin ID. Pinpoint's registry maps each ID
+                back to its target field. Later passes replace these separator expressions with
+                patchable instruction-pin markers while preserving that association.</p>
+                <h3>Stage 1: instruction pins</h3>
+                <p>The second stage begins with the GIMPLE pass <code>asm_offset</code>. It
+                replaces each surviving separator call with a synthetic non-volatile
+                inline-assembly marker. At this point, the marker does not yet contain the final
+                instruction or any assembler labels. Its purpose is to preserve the field-offset
+                value as an ordinary register-producing data dependency while carrying the
+                instruction-pin ID into later compiler passes.</p>
+                <p>Each marker has one register output and one immediate input:</p>
                 <ul>
-                    <li>the compilation-unit-local target ID,</li>
-                    <li>the original field offset.</li>
+                    <li>the output in which GCC will materialize the field offset,</li>
+                    <li>the compiler-internal instruction-pin ID.</li>
                 </ul>
-                <p>Conceptually, the assembly markers do not carry any information that was not
-                already present in the separator calls. Both representations encode the same target
-                ID and original field offset. The transformation exists purely for code-generation
-                reasons. If pinpoint kept the separator calls until final RTL, GCC would have to
-                treat them as ordinary calls for much of compilation. This would force the
-                surrounding code to respect normal calling-convention requirements, such as
-                preserving caller-saved registers and modeling call side effects. Replacing the
-                calls with register-output assembly markers preserves the exact same SPSLR metadata
-                while allowing GCC to treat the value as an ordinary computed operand rather than a
-                real function call. The markers therefore eliminate potential runtime overhead
-                without changing the information carried through the compiler pipeline.</p>
-                <p>The marker is intentionally non-volatile. If an offset computation becomes
-                unused after optimization, GCC may delete it. Only offset computations that survive
-                optimization become instruction pins.</p>
-                <h3>Stage 2: final instruction pins</h3>
-                <p>The final RTL pass, <code>spslr_rtl_pin_lower</code>, runs shortly before GCC's
-                final output pass. At this point, GCC has selected a concrete destination register
-                for each surviving asm marker. Pinpoint then lowers the marker into explicit x86_64
-                instruction bytes.</p>
-                <p>Currently, pinpoint emits a dedicated <code>mov imm32, r64</code> instruction.
-                The four-byte immediate field is labeled with a local assembler symbol. That symbol
-                becomes the address selfpatch later uses when rewriting the field offset.</p>
-                <pre><code class="language-nasm">; movq imm32, %rax
-.byte 0x48, 0xc7, 0xc0
-
-; the labeled imm32 value
-.Lspslr_ipin_0:
-.type .Lspslr_ipin_0, @object
-.size .Lspslr_ipin_0, 4
-.long 8</code></pre>
-                <p>The symbol does not name a callable code location. It names the immediate bytes
-                inside the instruction stream. The associated SPSLR metadata records the symbol,
-                the immediate size, and the expression needed to compute the replacement value
-                after layout randomization.</p>
-                <p>This design keeps runtime patching simple: selfpatch only overwrites the labeled
-                immediate bytes. The tradeoff is that current pinpoint lowering materializes field
-                offsets in a register instead of folding them directly into memory-addressing
-                displacements.</p>
+                <p>The target and field information is retained in pinpoint's instruction-pin
+                registry and is associated with that ID. It does not need to be repeated as
+                separate operands in the inline assembly.</p>
+                <p>Replacing separator calls with assembly markers prevents GCC from treating the
+                offset computation as an ordinary function call. The value can flow through the
+                surrounding code as a normal computed operand without introducing
+                calling-convention effects or runtime call overhead.</p>
+                <p>The marker is intentionally non-volatile. If optimization makes an offset
+                computation unused, GCC may remove it. Only markers that remain in final RTL become
+                instruction pins.</p>
+                <p>Immediately before GCC's final output pass, the RTL pass
+                <code>spslr_rtl_ipin_survival_scan</code> scans the resulting instruction stream.
+                For every marker that survived optimization, it assigns a unique operand-address
+                symbol and operand-width symbol and replaces the marker's assembly template with
+                the final <code>movq</code> template:</p>
+                <pre><code class="language-nasm"># spslr_ipin_marker
+movq $fieldlabel(8, .Lspslr_ipin_42, .Lspslr_ipin_width_42), %0</code></pre>
+                <p>The numeric argument to <code>fieldlabel</code> is the original compile-time
+                field offset. The <code>%0</code> placeholder refers to the register selected by
+                GCC through the marker's output constraint.</p>
+                <p>The late RTL scan is necessary because GCC may remove or duplicate inline
+                assembly during optimization. A removed marker produces no metadata. When GCC has
+                duplicated a marker, pinpoint creates a separate live instruction pin for each
+                surviving RTL occurrence and gives every occurrence its own address and width
+                symbols.</p>
+                <p>After compilation, the custom toolchain's assembler performs the normal
+                instruction encoding. The <code>fieldlabel</code> expression instructs it to place
+                the specified address symbol at the encoded immediate field and to define the width
+                symbol according to the number of bytes used by that field. The emitted SPSLR
+                metadata directly links against these symbols and Selfpatch later overwrites
+                exactly the labelled bytes with the randomized field offset.</p>
+                <p>The current transformation still materializes each randomized field offset in a
+                register rather than folding it directly into a memory-addressing displacement:</p>
                 <pre><code class="language-nasm">mov $field_offset, %rax
 mov (%rdi,%rax,1), %rax</code></pre>
-                <p>A future implementation could avoid this extra materialization instruction by
-                teaching the assembler to label operands directly or by introducing a
-                relocation-like mechanism for patchable instruction operands. Until such support
-                exists, pinpoint contains a small x86_64-specific instruction emitter for these
-                immediate materialization sites.</p>
+                <p>In the future, pinpoint may fold instruction pins into the memory operands that
+                actually use the randomized offsets.</p>
                 <h3>Data pins</h3>
                 <p>Instruction pins describe code locations. Data pins describe static storage that
                 already contains SPSLR target instances in their original compile-time layout.</p>
@@ -493,8 +499,10 @@ tance_count<span class="nul">\0</span>next<span class="nul">\0</span>...........
                     <li>Inline assembly must not encode assumptions about randomized target layouts
                     unless explicitly excluded from SPSLR or manually synchronized with runtime
                     patching.</li>
-                    <li>The current implementation assumes predictable instruction pin lowering so
-                    that runtime patch sites remain identifiable and patchable.</li>
+                    <li>The assembler must support the <code>fieldlabel</code> expression used by
+                    pinpoint. It must define both the operand-address symbol and the corresponding
+                    encoded-width symbol so that instruction-pin metadata identifies the exact
+                    bytes selfpatch must rewrite.</li>
                 </ul>
                 <h3>Current pinpoint implementation limitations</h3>
                 <p>The current pinpoint implementation intentionally preserves randomized

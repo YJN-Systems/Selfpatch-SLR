@@ -21,9 +21,21 @@
         "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
         aria-expanded="false" aria-controls="site-nav">Menu</button>
         <nav id="site-nav" class="site-nav" aria-label="Main navigation">
-            <a href="index.html">Overview</a> <a href="architecture.html">Architecture</a> <a href=
-            "bootpatch-slr.html" aria-current="page">Bootpatch-SLR</a> <a href=
-            "discussion.html">Discussion</a>
+            <a href="index.html">Getting Started</a> <a href="architecture.html">Architecture</a>
+            <a href="sanemaker.html">Sanemaker</a> <a href="bootpatch-slr.html" aria-current=
+            "page">Bootpatch-SLR</a> <a href="discussion.html">Discussion</a> <a href=
+            "blog/index.html">Blog</a>
+            <details class="nav-dropdown">
+                <summary class="repo-link">
+                    Code();
+                </summary>
+                <div class="dropdown-menu">
+                    <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                    "">Selfpatch-SLR</a> <a href="https://github.com/YJN-Systems/Bootpatch-SLR"
+                    data-external="">Bootpatch-SLR</a> <a href=
+                    "https://github.com/YJN-Systems/Sanemaker" data-external="">Sanemaker</a>
+                </div>
+            </details>
         </nav>
     </header>
     <main class="layout">
@@ -32,8 +44,7 @@
             "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
             <div class="toc-links">
                 <a href="#status">Status</a> <a href="#randstruct">Why not RandStruct?</a> <a href=
-                "#implementation">Current implementation</a> <a href="#repository">Repository</a>
-                <a href="#todo">Known issues</a>
+                "#implementation">Current implementation</a> <a href="#todo">Known issues</a>
             </div>
         </aside>
         <article class="content">
@@ -55,6 +66,8 @@
                     <li>Runtime randomization of most of <code class=
                     "language-c">task_struct</code></li>
                     <li>Successful boot into userspace on Ubuntu 24.04</li>
+                    <li>Based on Linux 7.2-rc3 since RFC v3</li>
+                    <li>Common default config boot paths validated with Sanemaker</li>
                     <li>Implementation in progress...</li>
                 </ul>
             </section>
@@ -92,22 +105,8 @@
                 built from an almost-default Ubuntu kernel configuration for that release. The
                 prototype currently demonstrates successful early boot and userspace startup with
                 runtime-randomized kernel structure layouts, serving as an initial proof of
-                feasibility for the approach.</p>
-            </section>
-            <section id="repository">
-                <h2>Repository and development branch</h2>
-                <p>BPSLR is developed in a separate <a href=
-                "https://github.com/YJN-Systems/Bootpatch-SLR" data-external="">Linux kernel
-                mirror</a>.</p>
-                <div class="note">
-                    <strong>Code location:</strong> The current development branch for BPSLR is
-                    <a href="https://github.com/YJN-Systems/Bootpatch-SLR/tree/bpslr-dev-6.12"
-                    data-external=""><code>bpslr-dev-6.12</code></a>.
-                </div>
-                <pre><code class=
-                "language-bash">git clone https://github.com/YJN-Systems/Bootpatch-SLR.git
-  cd linux
-  git switch bpslr-dev-6.12</code></pre>
+                feasibility for the approach. With the Sanemaker validation tool, it makes a
+                significant step towards safe deployment.</p>
             </section>
             <section id="todo">
                 <h2>Known issues</h2>
@@ -118,10 +117,10 @@
                     before BPSLR can be considered complete.</li>
                     <li><strong>Only part of <code class="language-c">task_struct</code> is
                     randomized.</strong> The current prototype randomizes most fields, but leaves
-                    fields fixed where required by compile-time layout constraints. A new pointer
+                    fields fixed where required by compile-time layout constraints. A new refresh
                     pin concept may allow pinpoint to restore compile-time availability of field
-                    pointers in static initializers, while marking those pointers in static data
-                    for patching.</li>
+                    offsets in static initializers, while marking the dependent static data for a
+                    refresh with randomized offsets during the Selfpatch stage.</li>
                     <li><strong>Additional kernel structures should be randomized.</strong> The
                     current focus is the <code class="language-c">task_struct</code>; broader
                     coverage requires auditing more structures and their initialization, ABI,
@@ -130,20 +129,6 @@
                     its way into the kernel, BPSLR will require upstream compiler support.
                     Eventually, the pinpoint plugin must be converted into patches for GCC and/or
                     Clang.</li>
-                    <li><strong>Micro-assemblers do not belong into compiler
-                    infrastructure.</strong> To place instruction pins directly at immediate
-                    operands, SPSLR uses a tiny assembler inside the pinpoint plugin. It is
-                    architecture-dependent and poorly maintainable. A new relocation type or custom
-                    operand labeling mechanism with assembler support could overcome this
-                    hurdle.</li>
-                    <li><strong>Instrumentation correctness is hard to verify.</strong> Successful
-                    boots and user space tests serve as valuable indication for mostly correct
-                    patching, but neither guarantees that no special-case struct accesses have been
-                    missed by the compiler. A QEMU TCG plugin is currently being developed to track
-                    memory accesses to target structures at runtime. Instructions that read or
-                    write target memory but are not present on an allow-list of instrumented
-                    instructions can be identified for further investigation. This should
-                    eventually provide proper SPSLR debugging and validation infrastructure.</li>
                 </ul>
             </section>
         </article>

@@ -22,9 +22,21 @@
         "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
         aria-expanded="false" aria-controls="site-nav">Menu</button>
         <nav id="site-nav" class="site-nav" aria-label="Main navigation">
-            <a href="index.html">Overview</a> <a href="architecture.html">Architecture</a> <a href=
-            "bootpatch-slr.html">Bootpatch-SLR</a> <a href="discussion.html" aria-current=
-            "page">Discussion</a>
+            <a href="index.html">Getting Started</a> <a href="architecture.html">Architecture</a>
+            <a href="sanemaker.html">Sanemaker</a> <a href="bootpatch-slr.html">Bootpatch-SLR</a>
+            <a href="discussion.html" aria-current="page">Discussion</a> <a href=
+            "blog/index.html">Blog</a>
+            <details class="nav-dropdown">
+                <summary class="repo-link">
+                    Code();
+                </summary>
+                <div class="dropdown-menu">
+                    <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                    "">Selfpatch-SLR</a> <a href="https://github.com/YJN-Systems/Bootpatch-SLR"
+                    data-external="">Bootpatch-SLR</a> <a href=
+                    "https://github.com/YJN-Systems/Sanemaker" data-external="">Sanemaker</a>
+                </div>
+            </details>
         </nav>
     </header>
     <main class="layout">
@@ -46,10 +58,21 @@
                 <h2>Mailing list archive entries</h2>
                 <div class="discussion-list">
                     <article class="discussion-card">
+                        <h3>[RFC v2] Bootpatch-SLR: Randomizing Linux Kernel Structure Layouts at
+                        Boot</h3>
+                        <p class="meta">List: linux-hardening · Date: 2026/06/20 · Status:
+                        outdated</p>
+                        <p>The second RFC gets rid of the Patchcompile pre-link stage and moves
+                        metadata directly into ELF object files. Furthermore, it fixes several bugs
+                        pointed out by RFC v1's Sashiko review.</p>
+                        <p><a href="https://lists.openwall.net/linux-hardening/2026/06/20/5"
+                        data-external="">View thread archive</a></p>
+                    </article>
+                    <article class="discussion-card">
                         <h3>[RFC] Bootpatch-SLR: Randomizing Linux Kernel Structure Layouts at
                         Boot</h3>
-                        <p class="meta">List: linux-hardening · Date: 2026/06/05 · Status: review
-                        pending</p>
+                        <p class="meta">List: linux-hardening · Date: 2026/06/05 · Status:
+                        outdated</p>
                         <p>This thread contains the initial public presentation of Bootpatch-SLR to
                         the linux-hardening mailing list. The cover letter provides an overview
                         over the project's objectives and baseline implementation. It serves as the

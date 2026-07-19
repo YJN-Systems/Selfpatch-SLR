@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.6.0">
+    <meta charset="utf-8">
+    <meta content="width=device-width, initial-scale=1" name="viewport">
+    <meta content=
+    "A Sanemaker case study tracing a Bootpatch-SLR failure in Linux 7.2-rc3 to RCU activity during text_poke_early."
+    name="description">
+    <title>Sanemaking the Linux Kernel Boot Process · SPSLR Blog</title>
+    <link href="../assets/style.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism-okaidia.min.css" rel=
+    "stylesheet">
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/prism.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-c.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-bash.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-nasm.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-json.min.js"></script>
+    <script defer src="../assets/main.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <a aria-label="SPSLR documentation home" class="brand" href=
+        "../index.html"><span>SPSLR</span></a> <button aria-controls="site-nav" aria-expanded=
+        "false" class="nav-toggle" type="button">Menu</button>
+        <nav aria-label="Main navigation" class="site-nav" id="site-nav">
+            <a href="../index.html">Getting Started</a> <a href=
+            "../architecture.html">Architecture</a> <a href="../sanemaker.html">Sanemaker</a>
+            <a href="../bootpatch-slr.html">Bootpatch-SLR</a> <a href=
+            "../discussion.html">Discussion</a> <a aria-current="page" href="index.html">Blog</a>
+            <details class="nav-dropdown">
+                <summary class="repo-link">
+                    Code();
+                </summary>
+                <div class="dropdown-menu">
+                    <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                    "">Selfpatch-SLR</a> <a href="https://github.com/YJN-Systems/Bootpatch-SLR"
+                    data-external="">Bootpatch-SLR</a> <a href=
+                    "https://github.com/YJN-Systems/Sanemaker" data-external="">Sanemaker</a>
+                </div>
+            </details>
+        </nav>
+    </header>
+    <main class="layout">
+        <aside aria-label="Page contents" class="toc">
+            <button aria-expanded="true" class="toc-toggle" type="button"><span class=
+            "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
+            <div class="toc-links">
+                <a href="#introduction">Introduction</a> <a href="#setup">Reproducing the
+                experiment</a> <a href="#failure">Observed failure</a> <a href=
+                "#kernel-runs">Kernel runs</a> <a class="toc-child" href="#baseline-run">Baseline
+                run</a> <a class="toc-child" href="#spslr-run">SPSLR run</a> <a href=
+                "#reading-diff">Reading the diff</a> <a class="toc-child" href=
+                "#false-positive">Early-kill artifact</a> <a href="#real-mismatch">The real
+                mismatch</a> <a href="#text-poke-chain">The text_poke_early chain</a> <a href=
+                "#failure-mechanism">The patching hazard</a> <a href="#conclusion">Conclusion</a>
+            </div>
+        </aside>
+        <article class="content">
+            <header class="post-header">
+                <p class="eyebrow">Sanemaker Case Study</p>
+                <h1>Sanemaking the Linux Kernel Boot Process</h1>
+                <p class="lead">A reproducible Bootpatch-SLR investigation in Linux 7.2-rc3: from
+                an endless RCU stall to the four instructions that first accessed the wrong
+                randomized field.</p>
+                <p class="post-meta"><time datetime="2026-07-17">July 19, 2026</time> <span>By York
+                Jasper Niebuhr</span> <span>About 10 minutes</span></p>
+            </header>
+            <div class="post-body">
+                <section id="introduction">
+                    <h2>Introduction</h2>
+                    <p>This article is a practical, reproducible Sanemaker walkthrough. It assumes
+                    familiarity with the validation model, terminology, userspace command chain,
+                    and interpretation rules described in the <a href="../sanemaker.html">Sanemaker
+                    documentation</a>.</p>
+                    <p>The experiment uses the Linux kernel tree published with Bootpatch-SLR RFC
+                    v3 and the latest Sanemaker version at the time (marked with the tag
+                    <b>rfc-v3</b> in both repositories). You can follow each step using the same
+                    sources and compare your own Sanemaker output with the addresses, disassembly,
+                    and mismatches shown here.</p>
+                    <p>The RFC v3 implementation randomizes almost all of <code>task_struct</code>.
+                    One of the few exceptions is <code>rcu_read_lock_nesting</code>, which is kept
+                    at its original offset with the <code>__spslr_field_fixed</code> annotation
+                    specifically because of the issue investigated here.</p>
+                    <p>To reproduce the original failure, remove the
+                    <code>__spslr_field_fixed</code> annotation from
+                    <code>rcu_read_lock_nesting</code> in <code>include/linux/sched.h</code>, then
+                    rebuild the kernel. This allows the field to participate in the randomized
+                    <code>task_struct</code> layout.</p>
+                    <p>The resulting boot reaches an RCU warning during the first scheduling
+                    transition and then emits an endless stream of RCU stall reports. The warning
+                    shows that RCU state is wrong, but not where it first became wrong. Sanemaker
+                    reduces the investigation to four mismatching memory accesses and reveals that
+                    the corruption happens while Bootpatch-SLR is still patching the kernel
+                    image.</p>
+                    <p>Bootpatch-SLR RFCs v1 and v2 were based on Linux 6.12 because that version
+                    did not trigger this issue. The relevant kernel implementation changed
+                    afterwards, making newer kernels enter RCU from the instruction-patching
+                    path.</p>
+                </section>
+                <section id="setup">
+                    <h2>Reproducing the experiment</h2>
+                    <p>Check out the Bootpatch-SLR RFC v3 kernel tree. Then remove the fixed-field
+                    annotation from <code>rcu_read_lock_nesting</code> in
+                    <code>include/linux/sched.h</code>.</p>
+                    <p>The field currently appears with an annotation equivalent to:</p>
+                    <pre><code class=
+                    "language-c">int rcu_read_lock_nesting __spslr_field_fixed;</code></pre>
+                    <p>For this experiment, change it to:</p>
+                    <pre><code class="language-c">int rcu_read_lock_nesting;</code></pre>
+                    <p>Start from the default x86 configuration, then enable SPSLR and
+                    Sanemaker:</p>
+                    <pre><code class="language-bash">make defconfig
+scripts/config --enable SPSLR
+scripts/config --enable SANEMAKER
+make olddefconfig</code></pre>
+                    <p>Then build the kernel.</p>
+                    <p>Only the kernel boot path is needed for this demonstration, so the initramfs
+                    can contain an <code>/init</code> that immediately powers the machine off.</p>
+                    <p>Generate Sanemaker metadata from the unstripped <code>vmlinux</code> image,
+                    not from the compressed <code>bzImage</code>:</p>
+                    <pre><code class=
+                    "language-bash">python3 binscan.py -o binscan.json Bootpatch-SLR/vmlinux</code></pre>
+                    <p>The bootable image is still <code>arch/x86/boot/bzImage</code>, but
+                    <code>vmlinux</code> is required for binscan because it retains the symbols
+                    used by Sanemaker.</p>
+                </section>
+                <section id="failure">
+                    <h2>Observed failure without Sanemaker</h2>
+                    <p>Without Sanemaker active, Bootpatch-SLR reports success and later
+                    reaches:</p>
+                    <pre><code class="language-none">Successfully applied SPSLR
+...
+Voluntary context switch within RCU read-side critical section!
+WARNING: kernel/rcu/tree_plugin.h:332 at rcu_note_context_switch+0x358/0x530
+...
+rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P0 }</code></pre>
+                    <p>The machine then repeats RCU stall diagnostics indefinitely. In this build,
+                    <code>rcu_note_context_switch</code> starts at <code>0xffffffff813c7690</code>,
+                    so the warning at offset <code>0x358</code> is reached at
+                    <code>0xffffffff813c79e8</code>.</p>
+                    <pre><code class=
+                    "language-nasm">ffffffff813c79dc: e9 25 fd ff ff         jmp  ffffffff813c7706 &lt;rcu_note_context_switch+0x76&gt;
+ffffffff813c79e1: 48 8d 3d 70 de 50 02   lea  rdi,[rip+0x250de70]
+ffffffff813c79e8: e8 a3 f2 06 01         call ffffffff82436c90 &lt;__SCT__WARN_trap&gt;</code></pre>
+                    <p>The only branch to the warning tests
+                    <code>task_struct.rcu_read_lock_nesting</code>:</p>
+                    <pre><code class=
+                    "language-nasm">ffffffff813c76b6: 48 c7 c0 7c 04 00 00  mov  rax,0x47c
+ffffffff813c76bd: 8b 34 03              mov  esi,DWORD PTR [rbx+rax]
+ffffffff813c76c0: 85 f6                 test esi,esi
+ffffffff813c76c2: 0f 8f 19 03 00 00     jg   ffffffff813c79e1 &lt;rcu_note_context_switch+0x351&gt;</code></pre>
+                    <p>The immediate pin sits at a 3 byte offset into the first instruction, so it
+                    begins at <code>0xffffffff813c76b9</code>. Binscan identifies it as an access
+                    to field 38 of target 0:</p>
+                    <pre><code class="language-json">{
+  "addr": "0xffffffff813c76b9",
+  "size": 4,
+  "target_id": 0,
+  "field_idx": 38,
+  "unit": 316
+}</code></pre>
+                    <p>According to the binscan file's "targets" array, target 0 is
+                    <code>task_struct</code>, and field 38 is <code>rcu_read_lock_nesting</code>,
+                    originally at offset 1148 (<code>0x47c</code>). This confirms that the
+                    warning-site instruction is correctly instrumented. The field must have been
+                    corrupted earlier.</p>
+                </section>
+                <section id="kernel-runs">
+                    <h2>Recording the kernel runs</h2>
+                    <h3 id="baseline-run">Baseline run</h3>
+                    <p>The first Sanemaker run records a semantic reference execution with
+                    Selfpatch-SLR disabled. This uses the same kernel image that produced the
+                    initial observation, but now boots under QEMU with the Sanemaker plugin enabled
+                    and <code>spslr=off</code>.</p>
+                    <pre><code class="language-bash">qemu-system-x86_64 \
+  -accel tcg \
+  -plugin "sanemaker.so,focus=binscan.json,out=logs/baseline,spslr=off,entry=0xffffffff83da4ad0" \
+  -m 1024 \
+  -kernel Bootpatch-SLR/arch/x86/boot/bzImage \
+  -initrd initramfs.cpio.gz \
+  -append "nokaslr earlycon=uart,io,0x3f8,115200 console=ttyS0,115200 rdinit=/init panic=-1 oops=panic ignore_loglevel loglevel=8" \
+  -nographic \
+  -serial mon:stdio \
+  -no-reboot</code></pre>
+                    <p>The command is identical to the later SPSLR run except that
+                    <code>spslr=off</code> disables runtime randomization and <code>kill-at</code>
+                    is omitted because the kernel shuts down normally.</p>
+                    <p>The <code>entry=0xffffffff83da4ad0</code> argument tells Sanemaker to begin
+                    tracing only once execution reaches <code>start_kernel()</code>. The value is
+                    simply the runtime address of <code>start_kernel</code> in this kernel build.
+                    Delaying instrumentation avoids tracing the decompressor and early boot loader
+                    code, substantially reducing the runtime of the baseline recording while still
+                    capturing the complete kernel initialization sequence. Note that the entire
+                    boot may still take more than 10 minutes to complete with this version of
+                    Sanemaker.</p>
+                    <p>After QEMU exits, merge the generated logs into <code>baseline.json</code>
+                    using <code>logmerge.py</code>.</p>
+                    <h3 id="spslr-run">SPSLR run</h3>
+                    <p>The SPSLR boot never terminates normally, so this run stops at the known
+                    warning call:</p>
+                    <pre><code class="language-bash">qemu-system-x86_64 \
+  -accel tcg \
+  -plugin "sanemaker.so,focus=binscan.json,out=logs/spslr,spslr=on,entry=0xffffffff83da4ad0,kill-at=0xffffffff813c79e8" \
+  -m 1024 \
+  -kernel Bootpatch-SLR/arch/x86/boot/bzImage \
+  -initrd initramfs.cpio.gz \
+  -append "nokaslr earlycon=uart,io,0x3f8,115200 console=ttyS0,115200 rdinit=/init panic=-1 oops=panic ignore_loglevel loglevel=8" \
+  -nographic \
+  -serial mon:stdio \
+  -no-reboot</code></pre>
+                    <h3 id="qemu-options">QEMU and plugin arguments</h3>
+                    <ul>
+                        <li><code>-accel tcg</code> forces QEMU's software translator. Sanemaker
+                        cannot observe execution performed by KVM.</li>
+                        <li><code>focus=binscan.json</code> supplies metadata for the kernel
+                        image.</li>
+                        <li><code>out=logs/...</code> selects the log output directory.</li>
+                        <li><code>spslr=on</code> enables runtime randomization. The baseline uses
+                        <code>spslr=off</code>.</li>
+                        <li><code>entry=0xffffffff83da4ad0</code> delays instrumentation until
+                        <code>start_kernel</code>.</li>
+                        <li><code>kill-at=0xffffffff813c79e8</code> terminates emulation at the
+                        warning call and flushes the logs.</li>
+                        <li><code>nokaslr</code> keeps runtime addresses aligned with binscan
+                        metadata, disassembly, <code>entry</code>, and <code>kill-at</code>.</li>
+                    </ul>
+                    <p>After QEMU exits, merge the generated logs into <code>spslr.json</code>
+                    using <code>logmerge.py</code>. Then compare <code>baseline.json</code> and
+                    <code>spslr.json</code> with <code>logdiff.py</code>.</p>
+                    <section id="reading-diff">
+                        <h2>Reading the diff</h2>
+                        <p>Missing instructions can result from timing or control-flow differences.
+                        Mismatches are the primary correctness signal because they mean that the
+                        same instruction address accessed different logical fields.</p>
+                        <h3 id="false-positive">An early-kill artifact</h3>
+                        <pre><code class=
+                        "language-none">Post-patch mismatch at pc &lt;main&gt;:0xffffffff81363ffc
+  common: [&lt;no-fields&gt;]
+  baseline.json additional: [task_struct.se[24-40]]
+  spslr.json additional: [task_struct.se[24-32]]</code></pre>
+                        <p><code>&lt;main&gt;</code> names the image, not a C function. This
+                        instruction is in <code>__enqueue_entity</code>. The baseline accessed
+                        bytes 24-40 of <code>task_struct.se</code>, while the SPSLR run accessed
+                        only bytes 24-32.</p>
+                        <pre><code class="language-c">struct sched_entity {
+    struct load_weight load;
+    struct rb_node run_node;
+    /* ... */
+};
+
+struct rb_node {
+    unsigned long __rb_parent_color;
+    struct rb_node *rb_right;
+    struct rb_node *rb_left;
+};</code></pre>
+                        <p>The randomized execution did not touch a wrong field. It was terminated
+                        before the instruction that would access the final eight bytes. Applying
+                        the same early kill point to the baseline removes the difference, so this
+                        is an early-termination artifact rather than a Bootpatch-SLR bug.</p>
+                    </section>
+                    <section id="real-mismatch">
+                        <h2>The real mismatch</h2>
+                        <pre><code class=
+                        "language-none">Pre-patch mismatch at pc &lt;main&gt;:0xffffffff813c0903
+  common: [task_struct.rcu_read_lock_nesting[0-4]]
+  spslr.json additional: [task_struct.ptrace[0-4]]
+Pre-patch mismatch at pc &lt;main&gt;:0xffffffff813c0910
+  common: [task_struct.rcu_read_lock_nesting[0-4]]
+  spslr.json additional: [task_struct.ptrace[0-4]]
+Pre-patch mismatch at pc &lt;main&gt;:0xffffffff813c2ee3
+  common: [task_struct.rcu_read_lock_nesting[0-4]]
+  spslr.json additional: [task_struct.ptrace[0-4]]
+Pre-patch mismatch at pc &lt;main&gt;:0xffffffff813c2ef0
+  common: [task_struct.rcu_read_lock_nesting[0-4]]
+  spslr.json additional: [task_struct.ptrace[0-4]]</code></pre>
+                        <p>These four PCs are the read and write accesses in
+                        <code>__rcu_read_lock</code> and <code>__rcu_read_unlock</code>. The
+                        <code>__rcu_read_lock</code> disassembly is:</p>
+                        <pre><code class="language-nasm">ffffffff813c08f0 &lt;__rcu_read_lock&gt;:
+ffffffff813c08f0: f3 0f 1e fa             endbr64
+ffffffff813c08f4: 65 48 8b 15 1c 57 ca 02 mov rdx,QWORD PTR gs:[rip+0x2ca571c]
+ffffffff813c08fc: 48 c7 c0 7c 04 00 00    mov rax,0x47c
+ffffffff813c0903: 8b 04 02                mov eax,DWORD PTR [rdx+rax]
+ffffffff813c0906: 48 c7 c1 7c 04 00 00    mov rcx,0x47c
+ffffffff813c090d: 83 c0 01                add eax,0x1
+ffffffff813c0910: 89 04 0a                mov DWORD PTR [rdx+rcx],eax
+ffffffff813c0913: e9 18 62 07 01          jmp ffffffff82436b30 &lt;__pi___x86_return_thunk&gt;</code></pre>
+                        <p>The instruction pins are present and correctly refer to
+                        <code>rcu_read_lock_nesting</code>, yet this function somewhy touches the
+                        <b>ptrace</b> member. The decisive clue is the label <strong>Pre-patch
+                        mismatch</strong>. It means the accesses occurred before selfpatch signaled
+                        that the entire image had finished patching. By then, SPSLR had already
+                        published the randomized layout and reordered <code>init_task</code>, while
+                        some instruction pins still contained their original offsets.</p>
+                        <p>For Sanemaker to report <code>task_struct.ptrace[0-4]</code>, all of the
+                        following had already happened:</p>
+                        <ol>
+                            <li>The randomized <code>task_struct</code> layout had been generated
+                            and published.</li>
+                            <li><code>ptrace[0-4]</code> had moved into the original byte position
+                            of <code>rcu_read_lock_nesting</code>.</li>
+                            <li><code>init_task</code> had already been reordered.</li>
+                            <li>An instruction still using the original
+                            <code>rcu_read_lock_nesting</code> offset executed.</li>
+                        </ol>
+                        <p>The mismatch therefore occurred during instruction patching itself. The
+                        suspicious environment call in that phase was
+                        <code>text_poke_early()</code>.</p>
+                    </section>
+                    <section id="text-poke-chain">
+                        <h2>Why <code>text_poke_early()</code> touches
+                        <code>task_struct</code></h2>
+                        <p>In Linux 7.2-rc3, <code>text_poke_early()</code> checks whether its
+                        destination belongs to module text. That reaches:</p>
+                        <pre><code class=
+                        "language-c">bool is_module_text_address(unsigned long addr)
+{
+    guard(rcu)();
+    return __module_text_address(addr) != NULL;
+}</code></pre>
+                        <p>The RCU guard eventually enters and exits preemptible RCU through these
+                        functions:</p>
+                        <pre><code class="language-c">static void rcu_preempt_read_enter(void)
+{
+    WRITE_ONCE(current-&gt;rcu_read_lock_nesting,
+               READ_ONCE(current-&gt;rcu_read_lock_nesting) + 1);
+}
+
+static int rcu_preempt_read_exit(void)
+{
+    int ret = READ_ONCE(current-&gt;rcu_read_lock_nesting) - 1;
+
+    WRITE_ONCE(current-&gt;rcu_read_lock_nesting, ret);
+    return ret;
+}</code></pre>
+                        <p>That is enough to explain the Sanemaker report: every instruction-pin
+                        patch performed through <code>text_poke_early()</code> accesses the
+                        original location of <code>current-&gt;rcu_read_lock_nesting</code> until
+                        the accesses in the rcu logic itself have been patched.</p>
+                        <p>Linux 6.12 used a different implementation:</p>
+                        <pre><code class=
+                        "language-c">bool is_module_text_address(unsigned long addr)
+{
+    bool ret;
+
+    preempt_disable();
+    ret = __module_text_address(addr) != NULL;
+    preempt_enable();
+
+    return ret;
+}</code></pre>
+                        <p>That version does not enter an RCU read-side critical section and
+                        therefore does not access <code>rcu_read_lock_nesting</code> from this
+                        path. This is why the Bootpatch-SLR v1 and v2 RFCs could use Linux 6.12
+                        without triggering the issue.</p>
+                    </section>
+                    <section id="failure-mechanism">
+                        <h2>The patching hazard</h2>
+                        <p>One concrete failing interleaving is enough to show the design
+                        problem:</p>
+                        <ol>
+                            <li><code>init_task</code> has already been reordered.</li>
+                            <li>The load instruction pin in <code>rcu_preempt_read_enter()</code>
+                            still contains the original offset.</li>
+                            <li>The store instruction pin has already been patched to the
+                            randomized offset.</li>
+                            <li>Another instruction pin is patched through
+                            <code>text_poke_early()</code>.</li>
+                            <li><code>text_poke_early()</code> enters
+                            <code>is_module_text_address()</code>, whose RCU guard executes the
+                            half-patched lock path.</li>
+                        </ol>
+                        <pre><code class="language-c">current-&gt;rcu_read_lock_nesting =
+    current-&gt;ptrace + 1;</code></pre>
+                        <p>The wrong field depends on the randomized layout and the order of
+                        instruction-pin updates. In this run, the original RCU offset referred to
+                        task_struct.ptrace. The general hazard is that randomized data becomes live
+                        before every instruction that can access it has been converted.</p>
+                        <div class="note warning">
+                            <strong>Current mitigation:</strong> Keep
+                            <code>rcu_read_lock_nesting</code> fixed with the SPSLR fixed-field
+                            attribute. A future BPSLR version needs an instruction-patching
+                            mechanism that does not execute code paths depending on structures
+                            already being randomized, or a staging strategy that guarantees such
+                            paths cannot observe a partially patched state.
+                        </div>
+                    </section>
+                    <section id="conclusion">
+                        <h2>Conclusion</h2>
+                        <p>The original warning identified invalid RCU state, and disassembly
+                        showed that the eventual warning-site pin was correct. Neither observation
+                        explained when the state was corrupted.</p>
+                        <p>Sanemaker identified four concrete accesses whose field semantics
+                        diverged and showed that they occurred before the complete-image patch
+                        boundary. That narrowed the failure to code executed during patching and
+                        led directly to the RCU guard inside <code>text_poke_early()</code>.</p>
+                        <p>The resulting bug was not a missing final-image instruction pin. It was
+                        a bootstrapping failure caused by executing a correctly instrumented path
+                        while that path was only partially converted.</p>
+                        <p>The comparison with Linux 6.12 also explains why the earlier RFC kernels
+                        worked: their module-text lookup disabled preemption instead of entering
+                        RCU, so <code>text_poke_early()</code> did not execute the randomized task
+                        field during patching.</p>
+                        <p>This case study is one example of the validation model described in the
+                        <a href="../sanemaker.html">Sanemaker documentation</a>. The same
+                        baseline-versus-randomized comparison can validate future Bootpatch-SLR
+                        patching strategies and reject unsafe images before deployment.</p>
+                    </section>
+                    <nav aria-label="Post navigation" class="post-navigation">
+                        <a href="index.html">← Back to all posts</a>
+                    </nav>
+                </section>
+            </div>
+        </article>
+    </main>
+    <footer class="site-footer">
+        <span>SPSLR documentation</span> <a data-external="" href=
+        "https://github.com/YJN-Systems/Selfpatch-SLR">SPSLR Repository</a>
+    </footer>
+</body>
+</html>

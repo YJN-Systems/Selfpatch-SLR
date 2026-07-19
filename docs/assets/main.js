@@ -15,6 +15,37 @@ if (navToggle && siteNav) {
   });
 }
 
+/*
+ * Open navigation dropdowns on hover for devices that actually
+ * support hovering. Touch devices retain the normal <details>
+ * tap-to-open behavior.
+ */
+const hoverQuery = window.matchMedia('(hover: hover) and (pointer: fine)');
+
+function configureHoverDropdowns() {
+  for (const dropdown of document.querySelectorAll('.nav-dropdown')) {
+    if (!(dropdown instanceof HTMLDetailsElement)) {
+      continue;
+    }
+
+    dropdown.onmouseenter = hoverQuery.matches
+      ? () => {
+          dropdown.open = true;
+        }
+      : null;
+
+    dropdown.onmouseleave = hoverQuery.matches
+      ? () => {
+          dropdown.open = false;
+        }
+      : null;
+  }
+}
+
+configureHoverDropdowns();
+
+hoverQuery.addEventListener('change', configureHoverDropdowns);
+
 for (const link of document.querySelectorAll('a[data-external]')) {
   link.setAttribute('target', '_blank');
   link.setAttribute('rel', 'noopener noreferrer');

@@ -25,8 +25,20 @@
         aria-expanded="false" aria-controls="site-nav">Menu</button>
         <nav id="site-nav" class="site-nav" aria-label="Main navigation">
             <a href="index.html" aria-current="page">Getting Started</a> <a href=
-            "architecture.html">Architecture</a> <a href="bootpatch-slr.html">Bootpatch-SLR</a>
-            <a href="discussion.html">Discussion</a>
+            "architecture.html">Architecture</a> <a href="sanemaker.html">Sanemaker</a> <a href=
+            "bootpatch-slr.html">Bootpatch-SLR</a> <a href="discussion.html">Discussion</a>
+            <a href="blog/index.html">Blog</a>
+            <details class="nav-dropdown">
+                <summary class="repo-link">
+                    Code();
+                </summary>
+                <div class="dropdown-menu">
+                    <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                    "">Selfpatch-SLR</a> <a href="https://github.com/YJN-Systems/Bootpatch-SLR"
+                    data-external="">Bootpatch-SLR</a> <a href=
+                    "https://github.com/YJN-Systems/Sanemaker" data-external="">Sanemaker</a>
+                </div>
+            </details>
         </nav>
     </header>
     <main class="layout">
@@ -48,9 +60,9 @@
                 <p class="lead">Selfpatch-SLR (SPSLR) implements runtime structure layout
                 randomization for C programs on x86_64 Linux.</p>
                 <div class="note warning">
-                    <strong>Current status:</strong> SPSLR is a research prototype for
-                    experimentation and evaluation, but with the ultimate goal of evolving into an
-                    upstreamable feature.
+                    <strong>Current status:</strong> SPSLR is an early but working implementation
+                    of runtime Structure Layout Randomization. It is accompanied by dedicated
+                    validation tooling and aims to ultimately become an upstreamable feature.
                 </div>
             </section>
             <section id="documentation">
@@ -68,6 +80,11 @@
                         and selfpatch internals.</p>
                     </article>
                     <article class="concept-card">
+                        <h3><a href="sanemaker.html">Sanemaker</a></h3>
+                        <p>Validation strategy and debugging approach for safe Selfpatch-SLR
+                        integration and deployment.</p>
+                    </article>
+                    <article class="concept-card">
                         <h3><a href="bootpatch-slr.html">Bootpatch-SLR</a></h3>
                         <p>Information on the Linux kernel implementation of Selfpatch-SLR.</p>
                     </article>
@@ -75,6 +92,11 @@
                         <h3><a href="discussion.html">Discussion</a></h3>
                         <p>Collection of feedback, mailing list archive links, frequently asked
                         questions and outstanding issues.</p>
+                    </article>
+                    <article class="concept-card">
+                        <h3><a href="blog/index.html">Blog</a></h3>
+                        <p>News, development notes, and technical articles from the Selfpatch-SLR
+                        project.</p>
                     </article>
                 </div>
             </section>
@@ -128,9 +150,9 @@
             </section>
             <section id="build-integration">
                 <h2>Build Integration</h2>
-                <p>SPSLR requires a custom toolchain, currently based on GCC 16. Information on
-                building it, the SPSLR components themselves, and the example host and module
-                subjects can be found in the project's <a href=
+                <p>SPSLR requires a custom toolchain, currently based on GCC 16.1.0 and GAS 2.46.1.
+                Information on building it, the SPSLR components themselves, and the example host
+                and module subjects can be found in the project's <a href=
                 "https://github.com/YJN-Systems/Selfpatch-SLR/blob/main/README.md" data-external=
                 "">README</a>. This section focuses on applying SPSLR to your project rather than
                 building SPSLR itself.</p>
@@ -259,7 +281,7 @@
                         </g>
                         <g class="svg-edge-group" data-tooltip=
                         "gcc-spslr -c selfpatch.c -o selfpatch.o">
-							<path class="svg-edge-hit" d="M 230 111 H 410"></path>
+                            <path class="svg-edge-hit" d="M 230 111 H 410"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 230 111 H 410"></path>
                             <text x="320" y="99" text-anchor="middle" class="svg-edge-label">
                                 gcc
@@ -267,7 +289,7 @@
                         </g>
                         <g class="svg-edge-group" data-tooltip=
                         "gcc-spslr -fplugin=pinpoint.so -c main.c -o main.o">
-							<path class="svg-edge-hit" d="M 230 196 H 410"></path>
+                            <path class="svg-edge-hit" d="M 230 196 H 410"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 230 196 H 410"></path>
                             <text x="320" y="184" text-anchor="middle" class="svg-edge-label">
                                 gcc + pinpoint
@@ -311,14 +333,14 @@
                             <path class="svg-edge-hit" d="M 580 196 H 640"></path>
                             <path class="svg-edge-hit" d="M 580 271 H 640"></path>
                             <path class="svg-edge-hit" d="M 580 346 H 640"></path>
-							<path class="svg-edge-hit" d="M 640 111 V 346"></path>
-							<path class="svg-edge-hit" d="M 640 232 H 760"></path>
+                            <path class="svg-edge-hit" d="M 640 111 V 346"></path>
+                            <path class="svg-edge-hit" d="M 640 232 H 760"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 580 111 H 640"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 580 196 H 640"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 580 271 H 640"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 580 346 H 640"></path>
-							<path class="svg-edge svg-edge-arrow" d="M 640 111 V 346"></path>
-							<path class="svg-edge svg-edge-arrow" d="M 640 232 H 760"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 640 111 V 346"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 640 232 H 760"></path>
                             <text x="700" y="220" text-anchor="middle" class="svg-edge-label">
                                 ld
                             </text>
@@ -327,12 +349,12 @@
                         "gcc-spslr -shared module.o baz.o -o module.so">
                             <path class="svg-edge-hit" d="M 580 481 H 640"></path>
                             <path class="svg-edge-hit" d="M 580 556 H 640"></path>
-							<path class="svg-edge-hit" d="M 640 481 V 556"></path>
-							<path class="svg-edge-hit" d="M 640 517 H 760"></path>
+                            <path class="svg-edge-hit" d="M 640 481 V 556"></path>
+                            <path class="svg-edge-hit" d="M 640 517 H 760"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 580 481 H 640"></path>
                             <path class="svg-edge svg-edge-arrow" d="M 580 556 H 640"></path>
-							<path class="svg-edge svg-edge-arrow" d="M 640 481 V 556"></path>
-							<path class="svg-edge svg-edge-arrow" d="M 640 517 H 760"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 640 481 V 556"></path>
+                            <path class="svg-edge svg-edge-arrow" d="M 640 517 H 760"></path>
                             <text x="700" y="505" text-anchor="middle" class="svg-edge-label">
                                 ld
                             </text>

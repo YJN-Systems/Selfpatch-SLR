@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.6.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Sanemaker: Validation framework for SPSLR.">
+    <title>Sanemaker · SPSLR</title>
+    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href=
+    "https://cdn.jsdelivr.net/npm/prismjs/themes/prism-okaidia.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/prism.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-c.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-bash.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-nasm.min.js"></script>
+    <script defer src="assets/main.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="index.html" aria-label=
+        "SPSLR documentation home"><span>SPSLR</span></a> <button class="nav-toggle" type="button"
+        aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="index.html">Getting Started</a> <a href="architecture.html">Architecture</a>
+            <a href="sanemaker.html" aria-current="page">Sanemaker</a> <a href=
+            "bootpatch-slr.html">Bootpatch-SLR</a> <a href="discussion.html">Discussion</a>
+            <a href="blog/index.html">Blog</a>
+            <details class="nav-dropdown">
+                <summary class="repo-link">
+                    Code();
+                </summary>
+                <div class="dropdown-menu">
+                    <a href="https://github.com/YJN-Systems/Selfpatch-SLR" data-external=
+                    "">Selfpatch-SLR</a> <a href="https://github.com/YJN-Systems/Bootpatch-SLR"
+                    data-external="">Bootpatch-SLR</a> <a href=
+                    "https://github.com/YJN-Systems/Sanemaker" data-external="">Sanemaker</a>
+                </div>
+            </details>
+        </nav>
+    </header>
+    <main class="layout">
+        <aside class="toc" aria-label="Page contents">
+            <button class="toc-toggle" type="button" aria-expanded="true"><span class=
+            "toc-toggle-label">On this page</span> <span class="toc-toggle-icon">‹</span></button>
+            <div class="toc-links">
+                <a href="#introduction">Introduction</a> <a href="#principles">Principles</a>
+                <a class="toc-child" href="#semantic-equivalence">Semantic equivalence</a>
+                <a class="toc-child" href="#patch-boundary">Patch boundary</a> <a class="toc-child"
+                href="#coverage">Coverage and guarantees</a> <a href="#workflow">Validation
+                Workflow</a> <a class="toc-child" href="#binscan">Generate metadata</a> <a class=
+                "toc-child" href="#baseline">Record baseline</a> <a class="toc-child" href=
+                "#randomized">Record randomized run</a> <a class="toc-child" href="#merge">Merge
+                logs</a> <a class="toc-child" href="#diff">Compare runs</a> <a href=
+                "#interpreting-results">Interpreting results</a> <a href="#ci">CI and
+                deployment</a> <a href="#impact">Impact</a>
+            </div>
+        </aside>
+        <article class="content">
+            <section class="hero" id="bpslr">
+                <p class="eyebrow">Sanemaker</p>
+                <h1>Semantic validation for Selfpatch-SLR</h1>
+                <p class="lead">Sanemaker verifies that instructions continue to access the same
+                logical structure fields after Selfpatch-SLR or Bootpatch-SLR randomize their
+                physical layout.</p>
+            </section>
+            <section id="introduction">
+                <h2>Introduction</h2>
+                <p>Selfpatch-SLR relies on static metadata produced by the Pinpoint compiler plugin
+                and on a runtime patcher that consumes that metadata. Correctness therefore depends
+                on identifying every layout-dependent memory access, associating it with the
+                correct target field, and patching every affected instruction to reference the
+                corresponding randomized offset.</p>
+                <p>Layout dependencies are not necessarily expressed as syntactically obvious
+                structure field accesses. Valid C code may depend on a structure layout without
+                ever referencing a field:</p>
+                <pre><code class="language-c">static struct foo obj;
+
+void set_at_42(char c)
+{
+    *((char *)&amp;obj + 42) = c;
+}</code></pre>
+                <p>Similar situations may arise through pointer arithmetic, type punning, inline
+                assembly, and architecture-specific code. Consequently, the generated metadata is
+                only as complete as the compiler analysis that produced it.</p>
+                <p>A single incorrect access may read or write another structure member while
+                remaining within valid memory. The resulting corruption often propagates long
+                before it causes an observable failure, making crashes poor indicators of where
+                semantic correctness was first lost.</p>
+                <p><strong>Sanemaker</strong> validates the runtime transformation by comparing the
+                logical structure fields accessed by each executed instruction before and after
+                Selfpatch-SLR.</p>
+                <blockquote>
+                    An instruction that accesses a particular set of logical fields without
+                    Selfpatch-SLR must access the same logical fields after randomization.
+                </blockquote>
+                <p>This makes Sanemaker suitable as a deployment validation tool. A CI pipeline can
+                execute representative workloads with Selfpatch-SLR disabled and enabled, compare
+                both executions, and reject any build containing unexplained semantic
+                mismatches.</p>
+            </section>
+            <section id="principles">
+                <h2>Principles</h2>
+                <h3 id="semantic-equivalence">Semantic field-access equivalence</h3>
+                <p>Sanemaker is implemented as a QEMU TCG plugin. It receives metadata describing
+                randomized targets, fields, data pins, instruction pins, executable image ranges,
+                and Sanemaker trap locations.</p>
+                <p>During execution, the plugin observes memory accesses made by translated
+                instructions and maps the accessed bytes back to logical target fields. Because it
+                has access to both the original and randomized layout, it can normalize accessed
+                address ranges into logical portions of fields such as:</p>
+                <pre><code class="language-none">task_struct.rcu_read_lock_nesting[0-4]
+task_struct.se[24-40]</code></pre>
+                <div class="note">
+                    <strong>Validation invariant:</strong> An instruction that accesses a
+                    particular set of <b>logical fields</b> without SPSLR must access the same set
+                    of <b>logical fields</b> with SPSLR enabled.
+                </div>
+                <p>This comparison is independent of the fields' actual byte offsets. A field may
+                move anywhere inside its target structure and still compare equal as long as the
+                instruction follows it correctly.</p>
+                <h3 id="patch-boundary">Pre-patch and post-patch execution</h3>
+                <p>Sanemaker keeps separate access buckets for execution before and after the
+                selfpatch boundary. Selfpatch explicitly signals this boundary when the host image
+                has completed its patch pass:</p>
+                <pre><code class=
+                "language-c">sanemaker_signal(SANEMAKER_SIGNAL_PATCH_BOUNDARY);</code></pre>
+                <p>This distinction lets Sanemaker expose transition-state bugs. A <em>pre-patch
+                mismatch</em> may indicate that code executed while randomized data was already
+                live but some instruction sites still used their original offsets. Issues that
+                occur even before Selfpatch has been invoked also show up as <em>pre-patch</em> but
+                are unlikely to be attributed to SPSLR.</p>
+                <h3 id="coverage">What Sanemaker guarantees</h3>
+                <p>For every instruction exercised in both compared runs, Sanemaker verifies
+                whether its observed target-field accesses remained semantically equivalent. It can
+                therefore detect incorrect accesses even when they do not immediately crash the
+                program or fail a functional assertion.</p>
+                <div class="note warning">
+                    <strong>Coverage rule:</strong> A clean Sanemaker report validates the
+                    exercised execution surface. It is not a mathematical proof for unexecuted,
+                    unreachable, configuration-dependent, or environment-dependent paths.
+                </div>
+                <p>Safe use therefore combines workloads deliberately designed to exercise the
+                relevant code surface with an empty unexplained-mismatch report.</p>
+            </section>
+            <section id="workflow">
+                <h2>Validation Workflow</h2>
+                <p>A normal Sanemaker validation consists of five stages:</p>
+                <pre><code class="language-none">binscan
+   ↓
+baseline execution
+   ↓
+randomized execution
+   ↓
+logmerge
+   ↓
+logdiff</code></pre>
+                <h3 id="binscan">1. Generate metadata with binscan</h3>
+                <pre><code class="language-bash">python3 binscan.py \
+    -o "binscan.json" \
+        "program"</code></pre>
+                <p><code>binscan.py</code> reads the target ELF image and the metadata emitted by
+                Pinpoint. <code>-o</code> selects the output JSON file, and the positional argument
+                names the ELF image to inspect. The generated JSON describes target structures and
+                fields, data pins, instruction pins, executable ranges, trap incisions, and logical
+                access units.</p>
+                <ul>
+                    <li><code>--no-ipins</code>: omit instruction-pin metadata.</li>
+                    <li><code>--no-dpins</code>: omit data-pin metadata.</li>
+                    <li><code>--no-traps</code>: omit Sanemaker trap metadata.</li>
+                    <li><code>--combine FILE</code>: load ranges whose instructions should be
+                    treated as one logical access unit.</li>
+                </ul>
+                <p>Some operations are logically larger than one machine instruction. A compiler
+                may implement <code>memcpy</code>, a structure assignment, or a vectorized copy
+                with several loads and stores whose boundaries depend on alignment. After layout
+                randomization, the same logical copy can cause different fields to fall on
+                different instructions even though the complete operation remains correct.</p>
+                <p>The optional <code>--combine FILE</code> argument lets such a range be treated
+                as one logical access unit. Sanemaker then compares the union of fields touched by
+                all instructions within the unit instead of assigning semantic meaning to each
+                implementation-level instruction separately. The specified file contains one
+                keyword per line. Every function whose name contains one of those keywords is
+                emitted as a logical access unit. Unwanted entries can be manually removed from the
+                generated json file.</p>
+                <p>Sanemaker does not require the instruction or data pins, but to use it, the
+                traps may not be omitted. Besides using the binscan output directly with Sanemaker,
+                it can be used to verify whether specific instructions were properly
+                instrumented.</p>
+                <h3 id="baseline">2. Record the baseline execution</h3>
+                <pre><code class="language-bash">qemu-x86_64 \
+    -plugin "sanemaker.so,focus=binscan.json,out=logs/baseline,spslr=off" \
+    "program" ...</code></pre>
+                <ul>
+                    <li><code>qemu-x86_64</code> executes the userspace ELF under QEMU user-mode
+                    translation.</li>
+                    <li><code>-plugin</code> loads Sanemaker.</li>
+                    <li><code>focus=...</code> supplies binscan metadata.</li>
+                    <li><code>out=...</code> selects the directory for per-process logs.</li>
+                    <li><code>spslr=off</code> records the non-randomized semantic reference
+                    execution.</li>
+                </ul>
+                <h3 id="randomized">3. Record the randomized execution</h3>
+                <pre><code class="language-bash">qemu-x86_64 \
+    -plugin "sanemaker.so,focus=binscan.json,out=logs/spslr,spslr=on" \
+    "program" ...</code></pre>
+                <p>This run uses the same image and workload, but <code>spslr=on</code> enables
+                runtime randomization. Reusing one binary avoids address drift and keeps the
+                comparison focused on the runtime transformation.</p>
+                <h3 id="merge">4. Merge per-process logs</h3>
+                <p>On exit, each process dumps one log file with a unique name to the specified
+                output directory. In <b>linux-user</b> mode, guest and host code runs within the
+                same host process. A guest fork also forks the QEMU and Sanemaker state. Thus, each
+                guest process eventually produces one log file. In <b>system</b> mode, QEMU
+                typically uses only one actual process, within which many kernel tasks can run, so
+                there is only one log file.</p>
+                <pre><code class="language-bash">python3 logmerge.py \
+    out="baseline.json" \
+    logs/baseline/sanemaker.*.json
+
+python3 logmerge.py \
+    out="spslr.json" \
+    logs/spslr/sanemaker.*.json</code></pre>
+                <p>Logmerge combines the per-process logs into per-run aggregates. The
+                <code>out=...</code> argument selects the merged output file; the remaining
+                arguments are the JSON fragments.</p>
+                <h3 id="diff">5. Compare normalized accesses</h3>
+                <pre><code class="language-bash">python3 logdiff.py \
+    binscan="binscan.json" \
+    missing="missing.logdiff" \
+    mismatches="mismatches.logdiff" \
+    "baseline.json" \
+    "spslr.json"</code></pre>
+                <ul>
+                    <li><code>binscan=...</code> supplies symbol, field, image, and combine-range
+                    metadata.</li>
+                    <li><code>missing=...</code> specifies the output dump location for
+                    instructions observed in only a subset of runs.</li>
+                    <li><code>mismatches=...</code> specifies the output dump location for
+                    instructions that touched different fields.</li>
+                    <li>The final arguments are the merged baseline and SPSLR logs.</li>
+                </ul>
+            </section>
+            <section id="interpreting-results">
+                <h2>Interpreting results</h2>
+                <ul>
+                    <li><strong>Missing instructions:</strong> PCs observed in only one run.</li>
+                    <li><strong>Mismatches:</strong> PCs observed in both runs that accessed
+                    different normalized fields.</li>
+                </ul>
+                <p>Missing instructions often result from timing, scheduling, input-dependent
+                control flow, or early termination. Mismatches are the principal correctness signal
+                because they mean that the same instruction address had different field semantics
+                between runs.</p>
+                <pre><code class="language-none">Post-patch mismatch at pc &lt;main&gt;:0x401234
+  common: [target.header[0-8]]
+  baseline.json additional: [target.payload[0-4]]
+  spslr.json additional: [target.flags[0-4]]</code></pre>
+                <p><code>common</code> lists fields touched in every run. Each
+                <code>additional</code> set lists fields unique to that run. <code>Pre-patch</code>
+                and <code>Post-patch</code> identify the bucket relative to the complete-image
+                boundary. <code>&lt;main&gt;</code> names the executable image, not a source-level
+                function.</p>
+                <p>Every mismatch must be investigated. It may identify a real missed access, an
+                incorrect pin, an unsafe transition, or an access unit that should be combined.</p>
+            </section>
+            <section id="ci">
+                <h2>CI and deployment</h2>
+                <p>Sanemaker is intended to act as a release gate. A practical pipeline builds an
+                instrumented image, records a baseline run, records an SPSLR-enabled run with the
+                same workload, and rejects the build if the comparison contains an unexplained
+                mismatch.</p>
+                <p>The strength of that gate depends on coverage. Production validation should
+                deliberately expand the exercised surface with unit and integration tests, fuzzers,
+                stress workloads, compiler and optimization matrices, architecture-specific tests,
+                different program or kernel configurations, and error or recovery paths.</p>
+                <p>For Bootpatch-SLR, QEMU system emulation under TCG can be combined with kernel
+                selftests, targeted initramfs scenarios, subsystem test suites, syzkaller-style
+                workloads, and configuration matrices. Each job contributes evidence for the paths
+                it executes.</p>
+                <div class="note warning">
+                    <strong>Deployment requirement:</strong> Selfpatch-SLR or Bootpatch-SLR should
+                    not be treated as trustworthy merely because the transformed program boots,
+                    passes ordinary tests, or survives a benchmark. Deployment requires semantic
+                    validation of representative workloads. A healthy SPSLR integration should
+                    never produce unexpected mismatches.
+                </div>
+            </section>
+            <section id="impact">
+                <h2>Impact</h2>
+                <p>Sanemaker changes the trust model. Instead of assuming that all access sites
+                were found and patched correctly, a deployment pipeline can compare the original
+                and randomized executions at the field level. It can detect silent corruption at
+                the first observed divergent access, before that corruption becomes an unrelated
+                crash or escapes testing entirely.</p>
+                <p>This does not eliminate the need for testing, code review, or careful patcher
+                design. It makes those activities measurable. Coverage describes which execution
+                surface was tested; Sanemaker describes whether layout randomization preserved the
+                semantics of that surface.</p>
+                <p>The Linux kernel case study <a href="blog/sanemk_kboot.html">Sanemaking the
+                Linux Kernel Boot Process</a> demonstrates this workflow on a real Bootpatch-SLR
+                failure. The article assumes the concepts and commands described on this page.</p>
+            </section>
+        </article>
+    </main>
+    <footer class="site-footer">
+        <span>SPSLR documentation</span> <a href="https://github.com/YJN-Systems/Selfpatch-SLR"
+        data-external="">SPSLR Repository</a>
+    </footer>
+</body>
+</html>

@@ -1,8 +1,10 @@
-#include <stage0.h>
 #include <functional>
 #include <list>
 
-#include <pinpoint_error.h>
+#include <pinpoint.h>
+#include <passes.h>
+#include <ipin_registry.h>
+#include <target_registry.h>
 
 /*
  * AccessChain flattens nested COMPONENT_REF / ARRAY_REF expressions from
@@ -21,8 +23,8 @@ struct AccessChain {
 
 		/* COMPONENT_REF data */
 		bool relevant = false;
-		UID target = UID_INVALID;
-		std::size_t offset = 0;
+		tree field = NULL_TREE;
+		ipin::handle pin = ipin::invalid;
 	};
 
 	bool relevant = false;
@@ -61,10 +63,14 @@ static bool access_chain(tree ref, AccessChain &chain)
 		AccessChain::Step step;
 		step.kind = AccessChain::Step::STEP_COMPONENT;
 		step.t = ref;
-		step.relevant =
-			TargetType::reference(ref, step.target, step.offset);
-		if (step.relevant)
+		tree field;
+		step.relevant = target::component_ref(ref, &field) &&
+				!target::field_is_fixed(field);
+		if (step.relevant) {
+			step.field = field;
+			step.pin = ipin::make(field);
 			chain.relevant = true;
+		}
 		chain.steps.push_front(step);
 		return access_chain(TREE_OPERAND(ref, 0), chain);
 	}
@@ -133,8 +139,8 @@ static tree separate_offset_chain_maybe(tree ref, gimple_stmt_iterator *gsi)
 			if (step.relevant) {
 				tree return_tmp =
 					create_tmp_var(size_type_node, NULL);
-				gimple *call_stmt = make_stage0_gimple_separator(
-					return_tmp, step.target, step.offset);
+				gimple *call_stmt = ipin::make_gimple_separator(
+					return_tmp, step.pin);
 				if (!call_stmt)
 					pinpoint_fatal(
 						"separate_offset_chain_maybe failed to make gimple separator");
@@ -147,13 +153,10 @@ static tree separate_offset_chain_maybe(tree ref, gimple_stmt_iterator *gsi)
 			} else {
 				tree field_decl = TREE_OPERAND(step.t, 1);
 
-				std::size_t field_offset;
-				bool field_bitfield;
-				if (!field_info(field_decl, &field_offset,
-						nullptr, nullptr,
-						&field_bitfield))
-					pinpoint_fatal(
-						"separate_offset_chain_maybe failed to get field info of non-target access");
+				std::size_t field_offset =
+					target::field_offset(field_decl);
+				bool field_bitfield =
+					target::field_is_bitfield(field_decl);
 				if (field_bitfield)
 					pinpoint_fatal(
 						"separate_offset_chain_maybe encountered bitfield access in relevant COMPONENT_REF chain");
@@ -289,7 +292,7 @@ walk_gimple_stmt(gimple_stmt_iterator *gsi,
 
 	gimple *stmt = gsi_stmt(*gsi);
 
-	for (int i = 0; i < gimple_num_ops(stmt); i++) {
+	for (std::size_t i = 0; i < gimple_num_ops(stmt); i++) {
 		tree *op = gimple_op_ptr(stmt, i);
 		if (!op || !*op)
 			continue;

@@ -1,5 +1,35 @@
 #pragma once
+#include <cstdio>
+#include <safe-diagnostic.h>
 #include <safe-ggc.h>
+
+#define SPSLR_ATTRIBUTE "spslr"
+#define SPSLR_FIELD_FIXED_ATTRIBUTE "spslr_field_fixed"
+#define SPSLR_TARGET_HASH_BUILTIN "__spslr_target_hash"
+
+extern bool pinpoint_verbose_enabled;
+
+#define plugin_print_early_error(fmt, ...)                                 \
+	do {                                                               \
+		std::fprintf(stderr, "[spslr::pinpoint] error: " fmt "\n", \
+			     ##__VA_ARGS__);                               \
+	} while (0)
+
+#define pinpoint_debug_loc(loc, fmt, ...)                       \
+	do {                                                    \
+		if (pinpoint_verbose_enabled)                   \
+			inform((loc), "[spslr::pinpoint] " fmt, \
+			       ##__VA_ARGS__);                  \
+	} while (0)
+
+#define pinpoint_debug(fmt, ...) \
+	pinpoint_debug_loc(UNKNOWN_LOCATION, fmt, ##__VA_ARGS__)
+
+#define pinpoint_fatal_loc(loc, fmt, ...) \
+	fatal_error((loc), "[spslr::pinpoint] " fmt, ##__VA_ARGS__)
+
+#define pinpoint_fatal(fmt, ...) \
+	pinpoint_fatal_loc(UNKNOWN_LOCATION, fmt, ##__VA_ARGS__)
 
 using pinpoint_gc_preserve_fn = void (*)();
 
@@ -29,6 +59,12 @@ using pinpoint_gc_preserve_fn = void (*)();
 	do {                          \
 		if ((t) != NULL_TREE) \
 			ggc_mark(t);  \
+	} while (0)
+
+#define PINPOINT_GC_MARK(p)          \
+	do {                         \
+		if (p)               \
+			ggc_mark(p); \
 	} while (0)
 
 extern "C" {

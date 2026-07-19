@@ -1,36 +1,36 @@
-#include <stage0.h>
-#include <pinpoint_config.h>
-#include <cstdio>
+#include <pinpoint.h>
+#include <passes.h>
 
-static tree log_new_target(tree *node, tree name, tree args, int flags,
-			   bool *no_add_attrs)
+static tree check_spslr_attribute(tree *node, tree name, tree args, int flags,
+				  bool *no_add_attrs)
 {
-	if (node)
-		TargetType::add(*node);
+	if (!node || !*node || TREE_CODE(*node) != RECORD_TYPE) {
+		*no_add_attrs = true;
+		pinpoint_debug(SPSLR_ATTRIBUTE
+			       " attribute only applies to record types");
+	}
 
 	return NULL_TREE;
 }
 
-static tree check_field_fixed_attribute(tree *node, tree name, tree args,
-					int flags, bool *no_add_attrs)
+static tree check_spslr_field_fixed_attribute(tree *node, tree name, tree args,
+					      int flags, bool *no_add_attrs)
 {
 	if (!node || !*node || TREE_CODE(*node) != FIELD_DECL) {
 		*no_add_attrs = true;
-		fprintf(stderr,
-			"%qs attribute only applies to struct/union fields",
-			SPSLR_FIELD_FIXED_ATTRIBUTE);
+		pinpoint_debug(SPSLR_FIELD_FIXED_ATTRIBUTE
+			       " attribute only applies to struct fields");
 	}
 	return NULL_TREE;
 }
 
 /*
  * __attribute__((spslr)) marks a record type as a randomization target.
- * The attribute only registers the type here; fields are fetched later once
- * GCC has completed the type.
  */
 
 static struct attribute_spec spslr_attribute = {
-	SPSLR_ATTRIBUTE, 0, 0, false, false, false, false, log_new_target, NULL
+	SPSLR_ATTRIBUTE,       0,   0, false, false, false, false,
+	check_spslr_attribute, NULL
 };
 
 /*
@@ -41,8 +41,8 @@ static struct attribute_spec spslr_attribute = {
  */
 
 static struct attribute_spec spslr_fixed_field_attribute = {
-	SPSLR_FIELD_FIXED_ATTRIBUTE, 0,	  0, false, false, false, false,
-	check_field_fixed_attribute, NULL
+	SPSLR_FIELD_FIXED_ATTRIBUTE,	   0,	0, false, false, false, false,
+	check_spslr_field_fixed_attribute, NULL
 };
 
 void on_register_attributes(void *plugin_data, void *user_data)

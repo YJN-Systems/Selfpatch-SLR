@@ -56,7 +56,7 @@ struct target_ref_desc {
 
 struct ipin_desc {
 	std::string addr_expr;
-	std::size_t size = 0;
+	std::string size_expr;
 	std::string expr_symbol;
 };
 
@@ -109,6 +109,7 @@ void emit_c_string(FILE *out, std::string_view value);
 std::string hash_hex(const hash16_t &hash);
 std::string comdat_target_symbol(const hash16_t &hash);
 std::string target_symbol(const hash16_t &hash);
+std::string target_hash_symbol(const hash16_t &hash);
 std::string target_layout_symbol(const hash16_t &hash);
 
 } // namespace selfpatch

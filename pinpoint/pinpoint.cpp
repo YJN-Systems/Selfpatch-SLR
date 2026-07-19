@@ -1,19 +1,23 @@
-#include <safe-gcc-plugin.h>
-#include <safe-plugin-version.h>
 #include <filesystem>
 #include <string>
 
-#include <stage0.h>
-#include <stage1.h>
-#include <stage2.h>
-#include <final.h>
-
-#include <gc_preserve.h>
-#include <pinpoint_error.h>
+#include <pinpoint.h>
+#include <passes.h>
+#include <safe-gcc-plugin.h>
+#include <safe-plugin-version.h>
 
 int plugin_is_GPL_compatible;
 
 bool pinpoint_verbose_enabled;
+
+void pinpoint_gc_preserve(void *, void *)
+{
+	for (pinpoint_gc_preserve_fn *p = PINPOINT_GC_SECTION_START;
+	     p != PINPOINT_GC_SECTION_END; ++p) {
+		if (*p)
+			(*p)();
+	}
+}
 
 int plugin_init(struct plugin_name_args *plugin_info,
 		struct plugin_gcc_version *version)
@@ -28,9 +32,8 @@ int plugin_init(struct plugin_name_args *plugin_info,
 	pinpoint_verbose_enabled = false;
 
 	for (int i = 0; i < plugin_info->argc; ++i) {
-		if (!strcmp(plugin_info->argv[i].key, "verbose")) {
+		if (!strcmp(plugin_info->argv[i].key, "verbose"))
 			pinpoint_verbose_enabled = true;
-		}
 	}
 
 	/*
@@ -40,11 +43,8 @@ int plugin_init(struct plugin_name_args *plugin_info,
 	 * Stage 0 runs while COMPONENT_REF trees are built or still available and records
 	 * which structure field offsets are randomization-sensitive.
 	 *
-	 * Stage 1 replaces synthetic separator calls with asm markers so GCC keeps
-	 * the offset value as a real data dependency through later optimization.
-	 *
-	 * Stage 2 runs on final RTL and lowers those markers into concrete architecture-specific
-	 * instructions whose immediate operands are labeled for runtime patching.
+	 * Stage 1 replaces synthetic separator calls with asm instructions whose immediate
+	 * operands are labeled for runtime patching.
 	 *
 	 * The final callback emits the collected metadata for patchcompile.
 	 */
@@ -62,10 +62,19 @@ int plugin_init(struct plugin_name_args *plugin_info,
 	register_callback(plugin_info->base_name, PLUGIN_GGC_MARKING,
 			  pinpoint_gc_preserve, NULL);
 
+	struct register_pass_info target_hash_builtin_pass_info;
+	target_hash_builtin_pass_info.pass =
+		new target_hash_builtin_pass(nullptr);
+	target_hash_builtin_pass_info.ref_pass_instance_number = 1;
+	target_hash_builtin_pass_info.reference_pass_name = "cfg";
+	target_hash_builtin_pass_info.pos_op = PASS_POS_INSERT_AFTER;
+	register_callback(plugin_info->base_name, PLUGIN_PASS_MANAGER_SETUP,
+			  nullptr, &target_hash_builtin_pass_info);
+
 	struct register_pass_info separate_offset_pass_info;
 	separate_offset_pass_info.pass = new separate_offset_pass(nullptr);
 	separate_offset_pass_info.ref_pass_instance_number = 1;
-	separate_offset_pass_info.reference_pass_name = "cfg";
+	separate_offset_pass_info.reference_pass_name = "spslr_target_hash";
 	separate_offset_pass_info.pos_op = PASS_POS_INSERT_AFTER;
 	register_callback(plugin_info->base_name, PLUGIN_PASS_MANAGER_SETUP,
 			  nullptr, &separate_offset_pass_info);
@@ -78,13 +87,14 @@ int plugin_init(struct plugin_name_args *plugin_info,
 	register_callback(plugin_info->base_name, PLUGIN_PASS_MANAGER_SETUP,
 			  nullptr, &asm_offset_pass_info);
 
-	struct register_pass_info rtl_pin_lower_pass_info;
-	rtl_pin_lower_pass_info.pass = new rtl_pin_lower_pass(nullptr);
-	rtl_pin_lower_pass_info.ref_pass_instance_number = 1;
-	rtl_pin_lower_pass_info.reference_pass_name = "final";
-	rtl_pin_lower_pass_info.pos_op = PASS_POS_INSERT_BEFORE;
+	struct register_pass_info rtl_ipin_survival_scan_pass_info;
+	rtl_ipin_survival_scan_pass_info.pass =
+		new rtl_ipin_survival_scan_pass(nullptr);
+	rtl_ipin_survival_scan_pass_info.ref_pass_instance_number = 1;
+	rtl_ipin_survival_scan_pass_info.reference_pass_name = "final";
+	rtl_ipin_survival_scan_pass_info.pos_op = PASS_POS_INSERT_BEFORE;
 	register_callback(plugin_info->base_name, PLUGIN_PASS_MANAGER_SETUP,
-			  nullptr, &rtl_pin_lower_pass_info);
+			  nullptr, &rtl_ipin_survival_scan_pass_info);
 
 	register_callback(plugin_info->base_name, PLUGIN_FINISH_UNIT,
 			  on_finish_unit, NULL);

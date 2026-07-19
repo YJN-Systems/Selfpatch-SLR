@@ -1,4 +1,4 @@
-add_library(pinpoint SHARED pinpoint.cpp gc_preserve.cpp)
+add_library(pinpoint SHARED pinpoint.cpp dpin_registry.cpp ipin_registry.cpp target_registry.cpp layout_hash.cpp)
 
 set_target_properties(pinpoint PROPERTIES PREFIX "")
 target_compile_definitions(pinpoint PRIVATE _GNU_SOURCE)
@@ -10,5 +10,4 @@ target_include_directories(pinpoint PRIVATE ${GCC_PLUGIN_PATH}/include ${CMAKE_C
 
 add_subdirectory(stage0)
 add_subdirectory(stage1)
-add_subdirectory(stage2)
 add_subdirectory(final)

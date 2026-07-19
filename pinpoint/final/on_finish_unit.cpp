@@ -1,24 +1,23 @@
-#include <final.h>
-#include <stage0.h>
-#include <stage2.h>
 #include <string>
 #include <filesystem>
 #include <vector>
 #include <algorithm>
+#include <unordered_map>
 
+#include <pinpoint.h>
+#include <passes.h>
+#include <ipin_registry.h>
+#include <dpin_registry.h>
+#include <serialize.h>
+#include <target_registry.h>
 #include <safe-input.h>
 #include <safe-output.h>
-#include <pinpoint_config.h>
-#include <pinpoint_error.h>
-
-#include <layout_hash.h>
-#include <serialize.h>
 
 /*
  * Finish-unit emits the per-compilation-unit metadata into the object asm.
  *
  * Only information that survived all earlier filtering should be dumped here:
- * target layouts, data pins for static objects, and stage2 instruction pins
+ * target layouts, data pins for static objects, and live instruction pins
  * whose immediates exist in the final object.
  */
 
@@ -38,8 +37,7 @@ static std::string src_filename()
 using selfpatch::hash16_t;
 
 struct emitted_target {
-	UID uid;
-	const TargetType *target;
+	tree target;
 	hash16_t hash;
 	std::size_t unit_target_idx;
 };
@@ -67,78 +65,56 @@ static std::string add_offset_expr(const std::string &symbol, std::size_t off)
 	return symbol + " + " + std::to_string(off);
 }
 
-static std::size_t field_index_for_offset(const TargetType &target,
-					  std::size_t field_offset)
-{
-	std::size_t idx = 0;
-
-	for (const auto &[off, field] : target.fields()) {
-		if (off == field_offset)
-			return idx;
-		++idx;
-	}
-
-	pinpoint_fatal("finish-unit: field offset not found in target");
-}
-
 static std::vector<emitted_target> collect_all_targets()
 {
 	std::vector<emitted_target> out;
-	out.reserve(TargetType::all().size());
+	out.reserve(target::target_count());
 
-	for (const auto &[uid, target] : TargetType::all()) {
-		if (!target.valid())
-			continue;
-
-		if (!target.has_fields())
-			pinpoint_fatal(
-				"finish-unit: target has incomplete fields");
-
+	target::iterate_targets([&](tree t) {
 		out.push_back({
-			.uid = uid,
-			.target = &target,
-			.hash = to_hash16(layout_hash(target)),
+			.target = t,
+			.hash = to_hash16(target::layout_hash(t)),
 			.unit_target_idx = out.size(),
 		});
-	}
+	});
 
 	return out;
 }
 
-static std::unordered_map<UID, std::size_t>
+static std::unordered_map<tree, std::size_t>
 make_unit_target_idx_map(const std::vector<emitted_target> &targets)
 {
-	std::unordered_map<UID, std::size_t> out;
+	std::unordered_map<tree, std::size_t> out;
 
 	for (const emitted_target &target : targets)
-		out[target.uid] = target.unit_target_idx;
+		out[target.target] = target.unit_target_idx;
 
 	return out;
 }
 
 static std::vector<emitted_dpin>
-collect_dpins(const std::unordered_map<UID, std::size_t> &target_idx)
+collect_dpins(const std::unordered_map<tree, std::size_t> &target_idx)
 {
 	std::vector<emitted_dpin> out;
 
-	for (const DataPin &dpin : DataPin::all()) {
-		if (dpin.symbol.empty())
+	for (const dpin &pin : dpin::inspect()) {
+		if (pin.symbol.empty())
 			pinpoint_fatal(
 				"finish-unit: data pin has empty symbol");
 
-		std::vector<DataPin::Component> components(
-			dpin.components.begin(), dpin.components.end());
+		std::vector<dpin::component> components(pin.components.begin(),
+							pin.components.end());
 
 		/*
 		 * Data pins with deeper nesting level must be patched first.
 		 */
 		std::sort(components.begin(), components.end(),
-			  [](const DataPin::Component &a,
-			     const DataPin::Component &b) {
+			  [](const dpin::component &a,
+			     const dpin::component &b) {
 				  return a.level > b.level;
 			  });
 
-		for (const DataPin::Component &c : components) {
+		for (const dpin::component &c : components) {
 			const auto target_it = target_idx.find(c.target);
 
 			if (target_it == target_idx.end())
@@ -147,7 +123,7 @@ collect_dpins(const std::unordered_map<UID, std::size_t> &target_idx)
 
 			out.push_back({
 				.addr_expr =
-					add_offset_expr(dpin.symbol, c.offset),
+					add_offset_expr(pin.symbol, c.offset),
 				.unit_target_idx = target_it->second,
 			});
 		}
@@ -160,20 +136,24 @@ static void emit_target_metadata(FILE *out,
 				 const std::vector<emitted_target> &targets)
 {
 	for (const emitted_target &ut : targets) {
-		const TargetType &target = *ut.target;
-
 		const std::string target_sym =
 			selfpatch::target_symbol(ut.hash);
+		const std::string hash_sym =
+			selfpatch::target_hash_symbol(ut.hash);
 		const std::string layout_sym =
 			selfpatch::target_layout_symbol(ut.hash);
 		const std::string fields_sym =
 			selfpatch::make_local_label("target_fields");
 
-		const std::string target_name =
-			selfpatch::emit_strtab_entry(out, target.name());
+		const std::string target_name = selfpatch::emit_strtab_entry(
+			out, target::qualified_name(ut.target));
 
 		selfpatch::emit_targets_section(out, ut.hash);
 		selfpatch::emit_hidden_global_label(out, target_sym);
+
+		/* This can only be done here, because the hash is the first
+		 * component of the target metadata. */
+		selfpatch::emit_hidden_global_label(out, hash_sym);
 
 		selfpatch::target_desc target_desc{
 			.hash = ut.hash,
@@ -187,9 +167,12 @@ static void emit_target_metadata(FILE *out,
 		selfpatch::emit_target_layouts_section(out, ut.hash);
 		selfpatch::emit_hidden_global_label(out, layout_sym);
 
+		const std::vector<target::compressed_field> &fields =
+			target::compressed_fields(ut.target);
+
 		selfpatch::target_layout_desc layout_desc{
-			.size = target.size(),
-			.field_cnt = target.fields().size(),
+			.size = target::size(ut.target),
+			.field_cnt = fields.size(),
 			.fields_symbol = fields_sym,
 		};
 
@@ -197,16 +180,18 @@ static void emit_target_metadata(FILE *out,
 
 		selfpatch::emit_label(out, fields_sym);
 
-		for (const auto &[off, field] : target.fields()) {
+		for (const target::compressed_field &field : fields) {
 			const std::string field_name =
 				selfpatch::emit_strtab_entry(out, field.name);
+
+			std::size_t field_flags = field.fixed ? 1 : 0;
 
 			selfpatch::target_field_desc field_desc{
 				.name_label = field_name,
 				.size = field.size,
 				.offset = field.offset,
 				.alignment = field.alignment,
-				.flags = field.flags,
+				.flags = field_flags,
 			};
 
 			selfpatch::emit_target_field(out, field_desc);
@@ -235,46 +220,54 @@ static void emit_unit_target_refs(FILE *out,
 }
 
 static void emit_ipins(FILE *out,
-		       const std::unordered_map<UID, std::size_t> &target_idx,
+		       const std::unordered_map<tree, std::size_t> &target_idx,
 		       const std::string &ipins_sym)
 {
-	std::vector<std::string> expr_syms;
-	expr_syms.reserve(s2_pins().size());
-
-	for (std::size_t i = 0; i < s2_pins().size(); ++i)
-		expr_syms.push_back(selfpatch::make_local_label("ipin_expr"));
+	std::map<ipin::handle, std::string> expr_syms;
 
 	selfpatch::emit_ipins_section(out);
 	selfpatch::emit_label(out, ipins_sym);
 
-	std::size_t i = 0;
-	for (const auto &[uid, ipin] : s2_pins()) {
+	for (const auto &[h, pin] : ipin::inspect()) {
+		if (pin.status != ipin::state::live)
+			continue;
+
+		if (pin.symbol.empty() || pin.width_symbol.empty())
+			pinpoint_fatal(
+				"finish-unit: live ipin is missing field symbols");
+
+		std::string expr_sym = selfpatch::make_local_label("ipin_expr");
+		expr_syms.emplace(h, expr_sym);
+
 		selfpatch::ipin_desc desc{
-			.addr_expr = ipin.symbol,
-			.size = ipin.imm_size,
-			.expr_symbol = expr_syms[i++],
+			.addr_expr = pin.symbol,
+			.size_expr = pin.width_symbol,
+			.expr_symbol = expr_sym,
 		};
 
 		selfpatch::emit_ipin(out, desc);
 	}
 
-	i = 0;
-	for (const auto &[uid, ipin] : s2_pins()) {
-		const auto target_it = target_idx.find(ipin.target);
+	for (const auto &[h, pin] : ipin::inspect()) {
+		if (pin.status != ipin::state::live)
+			continue;
+
+		tree pin_target = target::from_field(pin.field);
+		const auto target_it = target_idx.find(pin_target);
 
 		if (target_it == target_idx.end())
 			pinpoint_fatal(
 				"finish-unit: ipin target not in unit target map");
 
-		const TargetType *target = TargetType::find(ipin.target);
-		if (!target)
-			pinpoint_fatal("finish-unit: ipin target missing");
+		auto expr_sym_it = expr_syms.find(h);
+		if (expr_sym_it == expr_syms.end())
+			pinpoint_fatal("finish-unit: lost ipin expr symbol");
 
-		selfpatch::emit_label(out, expr_syms[i++]);
+		selfpatch::emit_label(out, expr_sym_it->second);
 
 		selfpatch::ipin_expr_desc expr{
 			.unit_target_idx = target_it->second,
-			.field = field_index_for_offset(*target, ipin.offset),
+			.field = target::field_index(pin.field),
 		};
 
 		selfpatch::emit_ipin_expr(out, expr);
@@ -332,7 +325,7 @@ void on_finish_unit(void *plugin_data, void *user_data)
 		.source_label = source_label,
 		.target_ref_cnt = targets.size(),
 		.target_refs_symbol = target_refs_sym,
-		.ipin_cnt = s2_pins().size(),
+		.ipin_cnt = ipin::live_count(),
 		.ipins_symbol = ipins_sym,
 		.dpin_cnt = dpins.size(),
 		.dpins_symbol = dpins_sym,

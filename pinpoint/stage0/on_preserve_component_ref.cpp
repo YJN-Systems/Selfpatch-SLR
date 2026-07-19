@@ -1,6 +1,7 @@
-#include <stage0.h>
-#include <pinpoint_error.h>
-
+#include <pinpoint.h>
+#include <passes.h>
+#include <ipin_registry.h>
+#include <target_registry.h>
 #include <safe-tree.h>
 
 static tree materialize_c_rvalue(location_t loc, tree expr)
@@ -43,18 +44,17 @@ static tree materialize_c_rvalue(location_t loc, tree expr)
  * expression is "base.field". We rewrite it into pointer arithmetic whose
  * offset comes from a synthetic separator call:
  *
- *     base.field  ->  *(typeof(field) *)((char *)&base + separator(target, off))
+ *     base.field  ->  *(typeof(field) *)((char *)&base + separator(uid))
  *
  * Later passes replace the separator with an instruction pin.
  */
 
-static tree ast_separate_offset(tree ref, UID target, std::size_t offset)
+static tree ast_separate_offset(tree ref, ipin::handle pin)
 {
-	tree separator = make_stage0_ast_separator(target, offset);
+	tree separator = ipin::make_ast_separator(pin);
 	if (!separator)
 		pinpoint_fatal(
-			"ast_separate_offset failed to generate AST separator for target %u at offset %u",
-			(unsigned)target, (unsigned)offset);
+			"ast_separate_offset failed to generate AST separator");
 
 	tree base = TREE_OPERAND(ref, 0);
 
@@ -85,12 +85,15 @@ void on_preserve_component_ref(void *plugin_data, void *user_data)
 	if (!ref)
 		return;
 
-	UID target;
-	std::size_t offset;
-	if (!TargetType::reference(*ref, target, offset))
+	tree field;
+	if (!target::component_ref(*ref, &field))
 		return;
 
-	tree separated = ast_separate_offset(*ref, target, offset);
+	if (target::field_is_fixed(field))
+		return;
+
+	ipin::handle pin = ipin::make(field);
+	tree separated = ast_separate_offset(*ref, pin);
 	if (separated)
 		*ref = separated;
 }

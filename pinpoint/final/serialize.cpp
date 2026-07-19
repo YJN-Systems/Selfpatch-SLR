@@ -210,7 +210,7 @@ void emit_target_ref(FILE *out, const target_ref_desc &target)
 void emit_ipin(FILE *out, const ipin_desc &ipin)
 {
 	emit_quad_expr(out, ipin.addr_expr);
-	emit_quad(out, ipin.size);
+	emit_quad_expr(out, ipin.size_expr);
 	emit_quad_symbol(out, ipin.expr_symbol);
 }
 
@@ -288,6 +288,11 @@ std::string comdat_target_symbol(const hash16_t &hash)
 std::string target_symbol(const hash16_t &hash)
 {
 	return "__spslr_target_" + hash_hex(hash);
+}
+
+std::string target_hash_symbol(const hash16_t &hash)
+{
+	return "__spslr_target_hash_" + hash_hex(hash);
 }
 
 std::string target_layout_symbol(const hash16_t &hash)

@@ -1,12 +1,11 @@
-#include <stage0.h>
-#include <stage1.h>
-#include <stage2.h>
-
-#include <pinpoint_error.h>
+#include <passes.h>
+#include <ipin_registry.h>
+#include <dpin_registry.h>
+#include <target_registry.h>
 
 void on_start_unit(void *plugin_data, void *user_data)
 {
-	TargetType::reset();
-	DataPin::reset();
-	s2_pins_reset();
+	target::reset();
+	dpin::reset();
+	ipin::reset();
 }

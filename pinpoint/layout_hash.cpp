@@ -1,8 +1,9 @@
-#include "layout_hash.h"
-
 #include <cstdint>
 #include <cstring>
 #include <string>
+
+#include <layout_hash.h>
+#include <target_registry.h>
 
 #include <safe-md5.h>
 
@@ -26,23 +27,27 @@ void append_string(std::string &buf, const std::string &s)
 	buf.append(s);
 }
 
-} // namespace
+}
 
-std::array<std::byte, 16> layout_hash(const TargetType &target)
+std::array<std::byte, 16> compute_layout_hash(tree target_type)
 {
 	std::string buf;
 
-	append_string(buf, "spslr-layout-hash-v1");
+	append_string(buf, "spslr-layout-hash-v2");
 
-	append_string(buf, target.name());
-	append_size(buf, target.size());
+	for (const std::string &ctx : target::context_chain(target_type))
+		append_string(buf, ctx);
 
-	for (const auto &[off, field] : target.fields()) {
+	append_string(buf, target::name(target_type));
+	append_size(buf, target::size(target_type));
+
+	for (const target::compressed_field &field :
+	     target::compressed_fields(target_type)) {
 		append_string(buf, field.name);
 		append_size(buf, field.size);
 		append_size(buf, field.offset);
 		append_size(buf, field.alignment);
-		append_size(buf, field.flags);
+		append_size(buf, field.fixed ? 1 : 0);
 	}
 
 	unsigned char digest[16];

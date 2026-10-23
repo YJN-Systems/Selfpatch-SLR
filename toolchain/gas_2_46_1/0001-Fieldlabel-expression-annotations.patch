@@ -1,0 +1,184 @@
+From aa6e39a8a5493012c666b7a84d60cde30aae016d Mon Sep 17 00:00:00 2001
+From: York Jasper Niebuhr <yjn@yjn-systems.com>
+Date: Wed, 24 Jun 2026 13:53:17 +0200
+Subject: [PATCH 1/3] Fieldlabel expression annotations
+
+Applies to the 'binutils-2_46_1' tag.
+
+This patch implements the fieldlabel pseudo function to make GAS emit
+labels at the bytes that encode immediate or displacement bytes.
+
+An example for the fieldlabel feature is:
+
+    movq $fieldlabel(42, .Lsome_label), %0
+
+This causes GAS to put the .Lsome_label directly onto the bytes that
+encode the immediate value 42.
+
+The current implementation is only for x86_64.
+
+Signed-off-by: York Jasper Niebuhr <yjn@yjn-systems.com>
+---
+ gas/config/tc-i386.c | 27 +++++++++++++++++++++
+ gas/expr.c           | 56 ++++++++++++++++++++++++++++++++++++++++++++
+ gas/expr.h           |  4 ++++
+ 3 files changed, 87 insertions(+)
+
+diff --git a/gas/config/tc-i386.c b/gas/config/tc-i386.c
+index 0b98509e0d6..1a4791006fa 100644
+--- a/gas/config/tc-i386.c
++++ b/gas/config/tc-i386.c
+@@ -13003,6 +13003,29 @@ imm_size (unsigned int n)
+   return size;
+ }
+ 
++static void
++output_field_label (const expressionS *exp, char *field_start)
++{
++  symbolS *label = exp->X_field_label;
++  unsigned int line;
++  const char *file;
++
++  if (label == NULL)
++    return;
++
++  file = as_where (&line);
++
++  if (S_IS_DEFINED (label))
++    {
++      as_bad_where (file, line, _("field label `%s' is already defined"), S_GET_NAME (label));
++      return;
++    }
++
++  S_SET_SEGMENT (label, now_seg);
++  S_SET_VALUE (label, field_start - frag_now->fr_literal);
++  symbol_set_frag (label, frag_now);
++}
++
+ static void
+ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ {
+@@ -13024,6 +13047,7 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ 	      val = offset_in_range (val >> (size == 1 ? i.memshift : 0),
+ 				     size);
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].disps, p);
+ 	      md_number_to_chars (p, val, size);
+ 	    }
+ 	  else
+@@ -13062,6 +13086,7 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
+ 		}
+ 
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].disps, p);
+ 	      reloc_type = reloc (size, pcrel, sign, i.reloc[n]);
+ 	      if (GOT_symbol
+ 		  && GOT_symbol == i.op[n].disps->X_add_symbol
+@@ -13235,6 +13260,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
+ 	      val = offset_in_range (i.op[n].imms->X_add_number,
+ 				     size);
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].imms, p);
+ 	      md_number_to_chars (p, val, size);
+ 	    }
+ 	  else
+@@ -13256,6 +13282,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
+ 		sign = 0;
+ 
+ 	      p = frag_more (size);
++	      output_field_label (i.op[n].imms, p);
+ 	      reloc_type = reloc (size, 0, sign, i.reloc[n]);
+ 
+ 	      /*   This is tough to explain.  We end up with this one if we
+diff --git a/gas/expr.c b/gas/expr.c
+index 87824b0ca1a..3bf44ee9517 100644
+--- a/gas/expr.c
++++ b/gas/expr.c
+@@ -782,6 +782,55 @@ static void expr_copy (expressionS *dst, const expressionS *src)
+ # define md_register_arithmetic 1
+ #endif
+ 
++static bool
++parse_fieldlabel (expressionS *expressionP, enum expr_mode mode)
++{
++  char *label_name;
++  char c;
++
++  if (*input_line_pointer != '(')
++    return false;
++
++  ++input_line_pointer;
++  SKIP_WHITESPACE ();
++
++  expr (0, expressionP, mode);
++
++  if (*input_line_pointer != ',')
++    {
++      as_bad (_("expected comma in fieldlabel"));
++      expressionP->X_op = O_constant;
++      expressionP->X_add_number = 0;
++      expressionP->X_add_symbol = NULL;
++      expressionP->X_op_symbol = NULL;
++      expressionP->X_field_label = NULL;
++      return true;
++    }
++
++  ++input_line_pointer;
++  SKIP_WHITESPACE ();
++
++  c = get_symbol_name (&label_name);
++  if (!*label_name)
++    {
++      as_bad (_("expected symbol name in fieldlabel"));
++      restore_line_pointer (c);
++      expressionP->X_field_label = NULL;
++      return true;
++    }
++
++  expressionP->X_field_label = symbol_find_or_make (label_name);
++  restore_line_pointer (c);
++
++  SKIP_WHITESPACE ();
++  if (*input_line_pointer != ')')
++    as_bad (_("expected ')' after fieldlabel"));
++  else
++    ++input_line_pointer;
++
++  return true;
++}
++
+ /* In:	Input_line_pointer points to 1st char of operand, which may
+ 	be a space.
+ 
+@@ -1349,6 +1398,13 @@ operand (expressionS *expressionP, enum expr_mode mode)
+ 	  -- input_line_pointer;
+ 	  c = get_symbol_name (&name);
+ 
++	  if (strcmp (name, "fieldlabel") == 0)
++	    {
++	      restore_line_pointer (c);
++	      if (parse_fieldlabel (expressionP, mode))
++		break;
++	    }
++
+ #ifdef md_operator
+ 	  {
+ 	    op = md_operator (name, 1, &c);
+diff --git a/gas/expr.h b/gas/expr.h
+index 9097ff8b514..0c0f6c38335 100644
+--- a/gas/expr.h
++++ b/gas/expr.h
+@@ -141,6 +141,10 @@ typedef struct expressionS
+ 
+   /* Machine dependent field.  */
+   unsigned short X_md;
++
++  /* fieldlabel(EXPR, LABEL): LABEL names the first byte of the encoded
++     field that stores this expression.  */
++  symbolS *X_field_label;
+ } expressionS;
+ 
+ enum expr_mode
+-- 
+2.43.0
+

@@ -1,0 +1,1857 @@
+From 3552395d6ab7654a4ff546ce0450cd8d9a3d258f Mon Sep 17 00:00:00 2001
+From: York Jasper Niebuhr <yjn@yjn-systems.com>
+Date: Fri, 23 Oct 2026 23:02:25 +0200
+Subject: [PATCH] C deferred constants
+
+Applies to the 'releases/gcc-16.1.0' tag.
+
+Some compile-time constants carry semantic information that is lost when
+the C frontend folds them.  In particular, folding an offsetof expression
+to an INTEGER_CST loses both the field it refers to and the fact that the
+value depends on a field offset.
+
+Preserving this information is required by transformations which finalize
+or otherwise modify such values at a later compilation stage.  This is
+needed for runtime structure layout randomization and can also be used by
+eBPF CO-RE, where relocations depend on information about the source-level
+object rather than only on its folded value.
+
+Add deferred constants to allow such expressions to retain their semantic
+origin while continuing to behave as compile-time constants where required.
+Represent deferred expressions using DEFERRED_CST_EXPR and preserve
+deferred field-offset dependencies while folding offsetof expressions.
+Constant parts surrounding a deferred expression may be folded into the
+deferred expression.
+
+Allow deferred constants in static initializers when requested.  This
+permits constructs such as addresses of structure members and offsetof
+initializers to remain valid even though their final values are deferred.
+
+Add an early IPA barrier for deferred constants.  This provides a point
+before which an instrumentation pass can consume or transform the preserved
+expressions.  Deferred constants which reach the normal barrier are
+resolved to their compile-time values; a hard-barrier mode is provided to
+diagnose any deferred constants which remain unexpectedly.
+
+Signed-off-by: York Jasper Niebuhr <yjn@yjn-systems.com>
+---
+ gcc/Makefile.in           |   4 +-
+ gcc/alias.cc              |   1 +
+ gcc/c-family/c-attribs.cc |  30 +-
+ gcc/c-family/c-common.cc  | 107 ++++++-
+ gcc/c/c-decl.cc           |   1 +
+ gcc/c/c-fold.cc           | 157 +++++++++-
+ gcc/c/c-typeck.cc         |  40 ++-
+ gcc/common.opt            |   8 +
+ gcc/deferred-cst.cc       | 626 ++++++++++++++++++++++++++++++++++++++
+ gcc/deferred-cst.h        |  39 +++
+ gcc/expr.cc               |  35 ++-
+ gcc/fold-const.cc         |  14 +
+ gcc/gimple-expr.cc        |   5 +
+ gcc/gimple.cc             |   3 +-
+ gcc/gimplify.cc           |  54 +++-
+ gcc/internal-fn.cc        |   9 +
+ gcc/internal-fn.def       |   3 +
+ gcc/passes.def            |   1 +
+ gcc/tree-pass.h           |   1 +
+ gcc/tree-pretty-print.cc  |  31 +-
+ gcc/tree.cc               |  19 +-
+ gcc/tree.def              |  13 +
+ gcc/tree.h                |   1 +
+ gcc/varasm.cc             |  18 +-
+ 24 files changed, 1176 insertions(+), 44 deletions(-)
+ create mode 100644 gcc/deferred-cst.cc
+ create mode 100644 gcc/deferred-cst.h
+
+diff --git a/gcc/Makefile.in b/gcc/Makefile.in
+index 8ecef4ccdc7..e70fe8dc21b 100644
+--- a/gcc/Makefile.in
++++ b/gcc/Makefile.in
+@@ -1464,6 +1464,7 @@ OBJS = \
+ 	dce.o \
+ 	ddg.o \
+ 	debug.o \
++	deferred-cst.o \
+ 	hierarchical_discriminator.o \
+ 	dep-fusion.o \
+ 	df-core.o \
+@@ -3163,6 +3164,7 @@ GTFILES = $(CPPLIB_H) $(srcdir)/input.h $(srcdir)/coretypes.h \
+   $(srcdir)/internal-fn.h \
+   $(srcdir)/calls.cc \
+   $(srcdir)/analyzer/analyzer-language.cc \
++  $(srcdir)/deferred-cst.cc \
+   @all_gtfiles@
+ 
+ # Compute the list of GT header files from the corresponding C sources,
+@@ -4173,7 +4175,7 @@ PLUGIN_HEADERS = $(TREE_H) $(CONFIG_H) $(SYSTEM_H) coretypes.h $(TM_H) \
+   lcm.h cfgloopmanip.h file-prefix-map.h builtins.def $(INSN_ATTR_H) \
+   pass-instances.def params.list $(srcdir)/../include/gomp-constants.h \
+   $(EXPR_H) $(srcdir)/analyzer/*.h $(srcdir)/diagnostics/*.h \
+-  $(srcdir)/text-art/*.h $(srcdir)/topics/*.h
++  $(srcdir)/text-art/*.h $(srcdir)/topics/*.h deferred-cst.h
+ 
+ # generate the 'build fragment' b-header-vars
+ s-header-vars: Makefile
+diff --git a/gcc/alias.cc b/gcc/alias.cc
+index 6e16b21327f..2d5d672a520 100644
+--- a/gcc/alias.cc
++++ b/gcc/alias.cc
+@@ -618,6 +618,7 @@ ends_tbaa_access_path_p (const_tree t)
+   switch (TREE_CODE (t))
+     {
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+       if (DECL_NONADDRESSABLE_P (TREE_OPERAND (t, 1)))
+ 	return true;
+       /* Permit type-punning when accessing a union, provided the access
+diff --git a/gcc/c-family/c-attribs.cc b/gcc/c-family/c-attribs.cc
+index d437c55285e..a8dae5e7f52 100644
+--- a/gcc/c-family/c-attribs.cc
++++ b/gcc/c-family/c-attribs.cc
+@@ -193,6 +193,8 @@ static tree handle_null_terminated_string_arg_attribute (tree *, tree, tree, int
+ static tree handle_btf_decl_tag_attribute (tree *, tree, tree, int, bool *);
+ static tree handle_btf_type_tag_attribute (tree *, tree, tree, int, bool *);
+ 
++static tree handle_deferred_cst_access_attribute (tree *, tree, tree, int, bool *);
++
+ /* Helper to define attribute exclusions.  */
+ #define ATTR_EXCL(name, function, type, variable)	\
+   { name, function, type, variable }
+@@ -667,7 +669,9 @@ const struct attribute_spec c_common_gnu_attributes[] =
+   { "btf_type_tag",	      1, 1, false, true, false, false,
+ 			      handle_btf_type_tag_attribute, NULL},
+   { "btf_decl_tag",	      1, 1, true, false, false, false,
+-			      handle_btf_decl_tag_attribute, NULL}
++			      handle_btf_decl_tag_attribute, NULL},
++  { "deferred_cst_access",    0, 0, false, true, false, false,
++			      handle_deferred_cst_access_attribute, NULL }
+ };
+ 
+ const struct scoped_attribute_specs c_common_gnu_attribute_table =
+@@ -5292,6 +5296,30 @@ handle_btf_type_tag_attribute (tree *node, tree name, tree args,
+   return NULL_TREE;
+ }
+ 
++// TODO
++
++/* Handle the "deferred_cst_access" struct attribute.  */
++
++static tree
++handle_deferred_cst_access_attribute (tree *node,
++				      tree name,
++				      tree ARG_UNUSED (args),
++				      int ARG_UNUSED (flags),
++				      bool *no_add_attrs)
++{
++  tree type = *node;
++
++  if (TREE_CODE (type) != RECORD_TYPE)
++    {
++      warning (OPT_Wattributes,
++	      "%qE attribute only applies to struct types",
++	      name);
++      *no_add_attrs = true;
++    }
++
++  return NULL_TREE;
++}
++
+ /* Handle the "nonstring" variable attribute.  */
+ 
+ static tree
+diff --git a/gcc/c-family/c-common.cc b/gcc/c-family/c-common.cc
+index 5acb221d31f..f438011a3a9 100644
+--- a/gcc/c-family/c-common.cc
++++ b/gcc/c-family/c-common.cc
+@@ -57,6 +57,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "gcc-rich-location.h"
+ #include "gcc-urlifier.h"
+ #include "diagnostics/diagnostics-selftests.h"
++#include "deferred-cst.h"
+ 
+ cpp_reader *parse_in;		/* Declared in c-pragma.h.  */
+ 
+@@ -7217,13 +7218,32 @@ c_common_to_target_charset (HOST_WIDE_INT c)
+     return uc;
+ }
+ 
++/* Helper for fold_offsetof_internal.  Add OFFSET to the ACCUMULATOR
++   tree.  */
++static void
++accumulate_offset (tree *accumulator, tree offset)
++{
++  gcc_assert (accumulator);
++  gcc_assert (offset);
++
++  offset = convert (sizetype, offset);
++
++  if (*accumulator == NULL_TREE)
++    *accumulator = offset;
++  else
++    *accumulator = size_binop_loc (
++      input_location, PLUS_EXPR, *accumulator, offset);
++}
++
+ /* Fold an offsetof-like expression.  EXPR is a nested sequence of component
+    references with an INDIRECT_REF of a constant at the bottom; much like the
+    traditional rendering of offsetof as a macro.  TYPE is the desired type of
+-   the whole expression.  Return the folded result.  */
++   the whole expression.  Return the folded result.  NON_CST is set to the
++   sum of all non-constant portions of the offset.  DEFERRED is set to the
++   deferred constant portion of the offset.  */
+ 
+-tree
+-fold_offsetof (tree expr, tree type, enum tree_code ctx)
++static tree
++fold_offsetof_internal (tree expr, tree type, enum tree_code ctx, tree *non_cst, tree *deferred)
+ {
+   tree base, off, t;
+   tree_code code = TREE_CODE (expr);
+@@ -7233,10 +7253,10 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+       return expr;
+ 
+     case REALPART_EXPR:
+-     return fold_offsetof (TREE_OPERAND (expr, 0), type, code);
++     return fold_offsetof_internal (TREE_OPERAND (expr, 0), type, code, non_cst, deferred);
+ 
+     case IMAGPART_EXPR:
+-     base = fold_offsetof (TREE_OPERAND (expr, 0), type, code);
++     base = fold_offsetof_internal (TREE_OPERAND (expr, 0), type, code, non_cst, deferred);
+      if (base == error_mark_node)
+ 	return base;
+      off = TYPE_SIZE_UNIT (TREE_TYPE (TREE_TYPE (TREE_OPERAND (expr, 0))));
+@@ -7261,7 +7281,7 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+       return convert (type, TREE_OPERAND (expr, 0));
+ 
+     case COMPONENT_REF:
+-      base = fold_offsetof (TREE_OPERAND (expr, 0), type, code);
++      base = fold_offsetof_internal (TREE_OPERAND (expr, 0), type, code, non_cst, deferred);
+       if (base == error_mark_node)
+ 	return base;
+ 
+@@ -7277,8 +7297,24 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+ 				      / BITS_PER_UNIT));
+       break;
+ 
++    case DEFERRED_CST_COMPONENT_REF:
++      base = fold_offsetof_internal (TREE_OPERAND (expr, 0), type, code, non_cst, deferred);
++      if (base == error_mark_node)
++	return base;
++
++      t = TREE_OPERAND (expr, 1);
++      if (DECL_C_BIT_FIELD (t))
++	{
++	  error_at (EXPR_LOCATION (expr),
++		    "attempt to take address of bit-field structure member");
++	  return error_mark_node;
++	}
++      t = deferred_cst_call_ifn_field_offset (EXPR_LOCATION (expr), t);
++      accumulate_offset (deferred, t);
++      return base;
++
+     case ARRAY_REF:
+-      base = fold_offsetof (TREE_OPERAND (expr, 0), type, code);
++      base = fold_offsetof_internal (TREE_OPERAND (expr, 0), type, code, non_cst, deferred);
+       if (base == error_mark_node)
+ 	return base;
+ 
+@@ -7330,13 +7366,26 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+ 
+       t = convert (sizetype, t);
+       off = size_binop (MULT_EXPR, TYPE_SIZE_UNIT (TREE_TYPE (expr)), t);
++
++      /* For classification as cst/non-cst, the array index has to be
++	 fully folded.  */
++      off = c_fully_fold(off, false, NULL);
++
++      if (off == error_mark_node)
++	return off;
++
++      if (!TREE_CONSTANT (off))
++	{
++	  accumulate_offset (non_cst, off);
++	  return base;
++	}
+       break;
+ 
+     case COMPOUND_EXPR:
+       /* Handle static members of volatile structs.  */
+       t = TREE_OPERAND (expr, 1);
+       gcc_checking_assert (VAR_P (get_base_address (t)));
+-      return fold_offsetof (t, type);
++      return fold_offsetof_internal (t, type, ERROR_MARK, non_cst, deferred);
+ 
+     default:
+       gcc_unreachable ();
+@@ -7346,6 +7395,48 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
+     return size_binop (PLUS_EXPR, base, convert (type, off));
+   return fold_build_pointer_plus (base, off);
+ }
++
++/* Like fold_offsetof_internal, but integrates deferred constant components
++   into the result.  If such components exist, the result is wrapped in a
++   DEFERRED_CST_EXPR node.  */
++
++tree
++fold_offsetof (tree expr, tree type, enum tree_code ctx)
++{
++  tree res = NULL_TREE;
++  tree non_cst = NULL_TREE;
++  tree deferred = NULL_TREE;
++  tree cst = fold_offsetof_internal (expr, type, ctx, &non_cst, &deferred);
++
++  res = cst;
++
++  if (res == error_mark_node)
++    return res;
++
++  /* DEFERRED_CST_EXPRs contain only ordinary constants and deferred
++     constant components.  */
++  if (deferred != NULL_TREE)
++    {
++      if (POINTER_TYPE_P (type))
++	res = fold_build_pointer_plus (res, convert (sizetype, deferred));
++      else
++	res = size_binop (PLUS_EXPR, res, convert (type, deferred));
++
++      res = deferred_cst_build_expr (res);
++    }
++
++  /* Runtime-dependent terms are added only after the deferred
++     boundary has been constructed.  */
++  if (non_cst != NULL_TREE)
++    {
++      if (POINTER_TYPE_P (type))
++	res = fold_build_pointer_plus (res, convert (type, non_cst));
++      else
++	res = size_binop (PLUS_EXPR, res, convert (type, non_cst));
++    }
++
++  return res;
++}
+ 
+ /* *PTYPE is an incomplete array.  Complete it with a domain based on
+    INITIAL_VALUE.  If INITIAL_VALUE is not present, use 1 if DO_DEFAULT
+diff --git a/gcc/c/c-decl.cc b/gcc/c/c-decl.cc
+index 8a894de3a1b..62da65e0efb 100644
+--- a/gcc/c/c-decl.cc
++++ b/gcc/c/c-decl.cc
+@@ -62,6 +62,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "omp-offload.h"  /* For offload_vars.  */
+ #include "c-parser.h"
+ #include "gcc-urlifier.h"
++#include "deferred-cst.h"
+ 
+ #include "tree-pretty-print.h"
+ 
+diff --git a/gcc/c/c-fold.cc b/gcc/c/c-fold.cc
+index 122049daf87..f333a33153c 100644
+--- a/gcc/c/c-fold.cc
++++ b/gcc/c/c-fold.cc
+@@ -26,9 +26,11 @@ along with GCC; see the file COPYING3.  If not see
+ #include "c-tree.h"
+ #include "intl.h"
+ #include "gimplify.h"
++#include "deferred-cst.h"
+ 
+ static tree c_fully_fold_internal (tree expr, bool, bool *, bool *, bool,
+ 				   bool);
++static tree c_fully_fold_deferred_cst_internal (tree expr);
+ 
+ /* If DISABLE is true, stop issuing warnings.  This is used when
+    parsing code that we know will not be executed.  This function may
+@@ -125,6 +127,7 @@ c_fully_fold (tree expr, bool in_init, bool *maybe_const, bool lval)
+     }
+   ret = c_fully_fold_internal (expr, in_init, maybe_const,
+ 			       &maybe_const_itself, false, lval);
++  ret = c_fully_fold_deferred_cst_internal (ret);
+   if (eptype)
+     ret = fold_convert_loc (loc, eptype, ret);
+   *maybe_const &= maybe_const_itself;
+@@ -258,14 +261,22 @@ c_fully_fold_internal (tree expr, bool in_init, bool *maybe_const_operands,
+       goto out;
+ 
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+       orig_op0 = op0 = TREE_OPERAND (expr, 0);
+       op1 = TREE_OPERAND (expr, 1);
+-      op2 = TREE_OPERAND (expr, 2);
++      if (code == COMPONENT_REF)
++	op2 = TREE_OPERAND (expr, 2);
+       op0 = c_fully_fold_internal (op0, in_init, maybe_const_operands,
+ 				   maybe_const_itself, for_int_const, lval);
+       STRIP_TYPE_NOPS (op0);
+       if (op0 != orig_op0)
+-	ret = build3 (COMPONENT_REF, TREE_TYPE (expr), op0, op1, op2);
++	{
++	  if (code == COMPONENT_REF)
++	    ret = build3 (COMPONENT_REF, TREE_TYPE (expr), op0, op1, op2);
++	  else
++	    ret = deferred_cst_build_component_ref (TREE_TYPE (expr),
++						    op0, op1);
++	}
+       if (ret != expr)
+ 	{
+ 	  TREE_READONLY (ret) = TREE_READONLY (expr);
+@@ -720,6 +731,148 @@ c_fully_fold_internal (tree expr, bool in_init, bool *maybe_const_operands,
+   return ret;
+ }
+ 
++/* Internal helper for c_fully_fold.  Fold surrounding constant
++   operations into DEFERRED_CST_EXPR nodes.
++
++   An operation is absorbed when:
++
++     - its tree code is explicitly supported by
++       deferred_cst_operator_p;
++     - every operand is constant-like; and
++     - at least one operand is a DEFERRED_CST_EXPR.
++
++   Existing deferred wrappers are removed when an operation is absorbed,
++   giving a single outer DEFERRED_CST_EXPR.  For example:
++
++       DEFERRED_CST_EXPR (A) + 1
++	 -> DEFERRED_CST_EXPR (A + 1)
++
++       (DEFERRED_CST_EXPR (A) + 1) * 2
++	 -> DEFERRED_CST_EXPR ((A + 1) * 2)
++
++       DEFERRED_CST_EXPR (A) + DEFERRED_CST_EXPR (B)
++	 -> DEFERRED_CST_EXPR (A + B)
++
++       DEFERRED_CST_EXPR (C) ? 1 : 2
++	 -> DEFERRED_CST_EXPR (C ? 1 : 2)
++
++   An operation involving a nonconstant operand is not absorbed:
++
++       X + DEFERRED_CST_EXPR (A)
++	 -> X + DEFERRED_CST_EXPR (A)  */
++
++static tree
++c_fully_fold_deferred_cst_internal (tree expr)
++{
++  if (expr == NULL_TREE)
++    return NULL_TREE;
++
++  enum tree_code code = TREE_CODE (expr);
++
++  /* The true constants inside deferred constants can be folded here,
++     while the deferred components are represented as calls to
++     internal functions and thus can not and should not be folded
++     here.  */
++  if (code == DEFERRED_CST_EXPR)
++  {
++    tree old_inner = TREE_OPERAND (expr, 0);
++
++    bool maybe_const_operands = true;
++    bool maybe_const_itself = true;
++
++    tree inner
++      = c_fully_fold_internal (old_inner, false,
++			       &maybe_const_operands,
++			       &maybe_const_itself,
++			       false, false);
++
++    if (inner == old_inner)
++      return expr;
++
++    return deferred_cst_build_expr (inner);
++  }
++
++  /* Unsupported operations form a boundary for deferred folding.  */
++  if (!deferred_cst_operator_p (code))
++    return expr;
++
++  int nops = TREE_OPERAND_LENGTH (expr);
++
++  /* Every currently-supported operator has at most three operands.  */
++  gcc_assert (nops >= 1 && nops <= 3);
++
++  tree ops[3];
++  bool changed = false;
++  bool has_deferred = false;
++  bool all_constant = true;
++  bool has_side_effects = false;
++
++  for (int i = 0; i < nops; ++i)
++    {
++      tree old_op = TREE_OPERAND (expr, i);
++      tree op = c_fully_fold_deferred_cst_internal (old_op);
++
++      ops[i] = op;
++
++      if (op != old_op)
++	changed = true;
++
++      if (TREE_CODE (op) == DEFERRED_CST_EXPR)
++	has_deferred = true;
++      else if (!TREE_CONSTANT (op))
++	all_constant = false;
++
++      if (TREE_SIDE_EFFECTS (op))
++	has_side_effects = true;
++    }
++
++  /* There is no deferred expression directly participating in this
++     operation, or there are non-constant operands or operands with
++     side effects involved, so the operation itself must not become
++     deferred.
++
++     We may nevertheless need to propagate a transformation made in one
++     of the operands.  */
++  if (!has_deferred || !all_constant || has_side_effects)
++    {
++      if (!changed)
++	return expr;
++
++      tree copy = copy_node (expr);
++      for (int i = 0; i < nops; i++)
++	TREE_OPERAND (copy, i) = ops[i];
++
++      return copy;
++    }
++
++  /* Every operand is constant-like and at least one operand is
++     deferred.  Move this complete operation inside one deferred
++     wrapper.  */
++
++  tree inner = copy_node (expr);
++  for (int i = 0; i < nops; i++)
++    {
++      bool op_deferred_cst = ops[i] != NULL_TREE
++			     && TREE_CODE (ops[i]) == DEFERRED_CST_EXPR;
++      TREE_OPERAND (inner, i) = op_deferred_cst
++				? TREE_OPERAND (ops[i], 0) : ops[i];
++    }
++
++  bool maybe_const_operands = true;
++  bool maybe_const_itself = true;
++
++  /* The true constants inside deferred constants can be folded here,
++     while the deferred components are represented as calls to
++     internal functions and thus can not and should not be folded
++     here.  */
++  inner = c_fully_fold_internal (inner, false,
++				 &maybe_const_operands,
++				 &maybe_const_itself,
++				 false, false);
++
++  return deferred_cst_build_expr (inner);
++}
++
+ /* Fold X for consideration by one of the warning functions when checking
+    whether an expression has a constant value.  */
+ 
+diff --git a/gcc/c/c-typeck.cc b/gcc/c/c-typeck.cc
+index aa368a6e95a..4d9c0179b29 100644
+--- a/gcc/c/c-typeck.cc
++++ b/gcc/c/c-typeck.cc
+@@ -55,6 +55,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "realmpfr.h"
+ #include "tree-pretty-print-markup.h"
+ #include "gcc-urlifier.h"
++#include "deferred-cst.h"
+ 
+ /* Possible cases of implicit conversions.  Used to select diagnostic messages
+    and control folding initializers in convert_for_assignment.  */
+@@ -2290,6 +2291,19 @@ c_size_in_bytes (const_tree type)
+ 				   / BITS_PER_UNIT));
+ }
+ 
++/* Return true if INIT is a valid deferred constant initializer.  */
++static bool
++deferred_constant_initializer_p (tree init)
++{
++  if (!flag_deferred_cst_static
++      || !init
++      || !deferred_cst_present_p (init))
++    return false;
++
++  return initializer_constant_valid_p (init, TREE_TYPE (init))
++	 != NULL_TREE;
++}
++
+ /* Return either DECL or its known constant value (if it has one).  */
+ 
+ tree
+@@ -2304,7 +2318,8 @@ decl_constant_value_1 (tree decl, bool in_init)
+       /* This is invalid if initial value is not constant.
+ 	 If it has either a function call, a memory reference,
+ 	 or a variable, then re-evaluating it could give different results.  */
+-      && TREE_CONSTANT (DECL_INITIAL (decl))
++      && (TREE_CONSTANT (DECL_INITIAL (decl))
++	  || deferred_constant_initializer_p (DECL_INITIAL (decl)))
+       /* Check for cases where this is sub-optimal, even though valid.  */
+       && (in_init || TREE_CODE (DECL_INITIAL (decl)) != CONSTRUCTOR))
+     return DECL_INITIAL (decl);
+@@ -3199,9 +3214,14 @@ build_counted_by_ref (tree datum, tree subdatum,
+       /* Get the TYPE of the counted_by field.  */
+       *counted_by_type = TREE_TYPE (counted_by_subdatum);
+ 
+-      counted_by_ref
+-	= build3 (COMPONENT_REF, TREE_TYPE (counted_by_subdatum),
+-		  datum, counted_by_subdatum, NULL_TREE);
++      if (deferred_cst_field_p (counted_by_subdatum))
++	counted_by_ref
++	  = deferred_cst_build_component_ref (TREE_TYPE (counted_by_subdatum),
++					      datum, counted_by_subdatum);
++      else
++	counted_by_ref
++	  = build3 (COMPONENT_REF, TREE_TYPE (counted_by_subdatum),
++		    datum, counted_by_subdatum, NULL_TREE);
+ 
+       datum = counted_by_ref;
+       counted_by_field = TREE_CHAIN (counted_by_field);
+@@ -3422,8 +3442,11 @@ build_component_ref (location_t loc, tree datum, tree component,
+ 	    quals |= TYPE_QUALS (TREE_TYPE (datum));
+ 	  subtype = c_build_qualified_type (TREE_TYPE (subdatum), quals);
+ 
+-	  ref = build3 (COMPONENT_REF, subtype, datum, subdatum,
+-			NULL_TREE);
++	  if (deferred_cst_field_p (subdatum))
++	    ref = deferred_cst_build_component_ref (subtype, datum, subdatum);
++	  else
++	    ref = build3 (COMPONENT_REF, subtype, datum, subdatum,
++			  NULL_TREE);
+ 	  SET_EXPR_LOCATION (ref, loc);
+ 
+ 	  check_counted_by_attribute (loc, ref);
+@@ -6364,6 +6387,7 @@ lvalue_p (const_tree ref)
+     case REALPART_EXPR:
+     case IMAGPART_EXPR:
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+       return lvalue_p (TREE_OPERAND (ref, 0));
+ 
+     case C_MAYBE_CONST_EXPR:
+@@ -10209,7 +10233,9 @@ digest_init (location_t init_loc, tree decl, tree type, tree init,
+       /* Check to see if we have already given an error message.  */
+       if (inside_init == error_mark_node)
+ 	;
+-      else if (require_constant && !TREE_CONSTANT (inside_init))
++      else if (require_constant
++	       && !TREE_CONSTANT (inside_init)
++	       && !deferred_constant_initializer_p (inside_init))
+ 	{
+ 	  error_init (init_loc, "initializer element is not constant");
+ 	  inside_init = error_mark_node;
+diff --git a/gcc/common.opt b/gcc/common.opt
+index 5d0e255a40d..648b0cb193f 100644
+--- a/gcc/common.opt
++++ b/gcc/common.opt
+@@ -3675,6 +3675,14 @@ Enum(zero_init_padding_bits_kind) String(unions) Value(ZERO_INIT_PADDING_BITS_UN
+ EnumValue
+ Enum(zero_init_padding_bits_kind) String(all) Value(ZERO_INIT_PADDING_BITS_ALL)
+ 
++fdeferred-cst-static
++Common Var(flag_deferred_cst_static) Init(0)
++Allow deferred constants to appear in static data.
++
++fdeferred-cst-barrier-hard
++Common Var(flag_deferred_cst_barrier_hard) Init(0)
++Make deferred-cst-barrier ICE if deferred constants remain.
++
+ g
+ Common Driver RejectNegative JoinedOrMissing
+ Generate debug information in default format.
+diff --git a/gcc/deferred-cst.cc b/gcc/deferred-cst.cc
+new file mode 100644
+index 00000000000..cc232066ea6
+--- /dev/null
++++ b/gcc/deferred-cst.cc
+@@ -0,0 +1,626 @@
++#include "config.h"
++#include "system.h"
++#include "coretypes.h"
++#include "tree.h"
++#include "stringpool.h"
++#include "fold-const.h"
++#include "internal-fn.h"
++#include "attribs.h"
++#include "tree-pass.h"
++#include "context.h"
++#include "cgraph.h"
++#include "function.h"
++#include "cfg.h"
++#include "basic-block.h"
++#include "gimple.h"
++#include "gimple-iterator.h"
++#include "gimple-walk.h"
++#include "diagnostic.h"
++
++#include "deferred-cst.h"
++
++/* Weak mapping from STRING_CST tokens used as arguments to
++   IFN_DEFERRED_CST_FIELD_OFFSET to the FIELD_DECL whose byte offset
++   the call represents.
++
++   For an ordinary field the value is that field's FIELD_DECL.
++
++   For a bit-field the value is DECL_BIT_FIELD_REPRESENTATIVE (field),
++   since IFN_DEFERRED_CST_FIELD_OFFSET describes the byte offset of
++   the whole bit-field representative rather than the individual
++   field.  */
++static GTY((cache)) tree_cache_map *field_offset_field_decls;
++
++/* Used only to make STRING_CST contents unique.  The actual string value has
++   no semantic meaning; the STRING_CST node itself is the metadata token.  */
++static unsigned HOST_WIDE_INT next_field_offset_token = 0;
++
++/* Return true if TYPE is a record carrying
++   __attribute__((deferred_cst_access)).  */
++bool
++deferred_cst_access_type_p (tree type)
++{
++  return (type
++	  && TREE_CODE (type) == RECORD_TYPE
++	  && lookup_attribute ("deferred_cst_access",
++			       TYPE_ATTRIBUTES (type)) != NULL_TREE);
++}
++
++bool
++deferred_cst_field_p (tree field)
++{
++  if (!field || TREE_CODE (field) != FIELD_DECL)
++    return false;
++
++  return deferred_cst_access_type_p (DECL_CONTEXT (field));
++}
++
++/* Return true if CODE is an operation which may be absorbed into a
++   DEFERRED_CST_EXPR.
++
++   This is deliberately an explicit whitelist.  In particular, do not
++   absorb arbitrary unary/binary/reference tree codes merely because all
++   of their operands happen to be constant.  */
++bool
++deferred_cst_operator_p (enum tree_code code)
++{
++  switch (code)
++    {
++    /* Binary arithmetic operations.  */
++    case PLUS_EXPR:
++    case MINUS_EXPR:
++    case MULT_EXPR:
++    case POINTER_PLUS_EXPR:
++    case POINTER_DIFF_EXPR:
++    case TRUNC_DIV_EXPR:
++    case CEIL_DIV_EXPR:
++    case FLOOR_DIV_EXPR:
++    case TRUNC_MOD_EXPR:
++    case RDIV_EXPR:
++    case EXACT_DIV_EXPR:
++    case LSHIFT_EXPR:
++    case RSHIFT_EXPR:
++    case LROTATE_EXPR:
++    case RROTATE_EXPR:
++    case BIT_IOR_EXPR:
++    case BIT_XOR_EXPR:
++    case BIT_AND_EXPR:
++      return true;
++
++    /* Comparisons.  */
++    case LT_EXPR:
++    case LE_EXPR:
++    case GT_EXPR:
++    case GE_EXPR:
++    case EQ_EXPR:
++    case NE_EXPR:
++    case UNORDERED_EXPR:
++    case ORDERED_EXPR:
++    case UNLT_EXPR:
++    case UNLE_EXPR:
++    case UNGT_EXPR:
++    case UNGE_EXPR:
++    case UNEQ_EXPR:
++      return true;
++
++    /* Boolean operations.
++
++       TRUTH_ANDIF_EXPR and TRUTH_ORIF_EXPR retain their short-circuit
++       semantics inside the deferred expression.  Nothing is evaluated
++       when absorbing expressions into deferred constants.  */
++    case TRUTH_AND_EXPR:
++    case TRUTH_OR_EXPR:
++    case TRUTH_XOR_EXPR:
++    case TRUTH_ANDIF_EXPR:
++    case TRUTH_ORIF_EXPR:
++      return true;
++
++    /* Unary arithmetic and conversions.  */
++    case FIX_TRUNC_EXPR:
++    case FLOAT_EXPR:
++    CASE_CONVERT:
++    case ADDR_SPACE_CONVERT_EXPR:
++    case NON_LVALUE_EXPR:
++    case NEGATE_EXPR:
++    case BIT_NOT_EXPR:
++    case TRUTH_NOT_EXPR:
++    case CONJ_EXPR:
++    case REALPART_EXPR:
++    case IMAGPART_EXPR:
++    case VIEW_CONVERT_EXPR:
++    case PAREN_EXPR:
++      return true;
++
++    case COMPLEX_EXPR:
++      return true;
++
++    /* Conditional expressions.  These are absorbed only when the
++       condition and both alternatives are all constant-like.  */
++    case COND_EXPR:
++    case VEC_COND_EXPR:
++      return true;
++
++    default:
++      return false;
++    }
++}
++
++tree
++deferred_cst_build_component_ref (tree type, tree base, tree field)
++{
++  gcc_assert (field);
++  gcc_assert (TREE_CODE (field) == FIELD_DECL);
++
++  return build2 (DEFERRED_CST_COMPONENT_REF, type, base, field);
++}
++
++tree
++deferred_cst_build_expr (tree expr)
++{
++  /* TODO assert that expr is actually a deferred constant  */
++  return build1_loc (EXPR_LOCATION (expr), DEFERRED_CST_EXPR,
++		     TREE_TYPE (expr), expr);
++}
++
++/* Create a unique STRING_CST to use as a metadata token.  */
++static tree
++make_token (const char *name, unsigned HOST_WIDE_INT id)
++{
++  char buf[128];
++
++  int len = snprintf (buf, sizeof (buf),
++		      "__deferred_cst_token_%s_"
++		      HOST_WIDE_INT_PRINT_UNSIGNED,
++		      name, id);
++
++  gcc_assert (len > 0);
++  gcc_assert ((unsigned int) len < sizeof (buf));
++
++  /* Include the trailing NUL.  */
++  unsigned int string_len = len + 1;
++
++  tree token = build_string (string_len, buf);
++
++  TREE_TYPE (token)
++    = build_array_type_nelts (char_type_node, string_len);
++
++  return token;
++}
++
++/* Generate a new key token into field_offset_field_decls and store
++   the FIELD_DECL FIELD under it.  Return the new token.  */
++static tree
++register_field_offset_field_decl (tree field)
++{
++  tree token = make_token ("field_offset", next_field_offset_token++);
++
++  if (!field_offset_field_decls)
++    field_offset_field_decls = tree_cache_map::create_ggc ();
++
++  bool existed = field_offset_field_decls->put (token, field);
++
++  /* Every token created above is unique.  */
++  gcc_assert (!existed);
++
++  return token;
++}
++
++/* Look up the field declaration associated with a token argument of
++   IFN_DEFERRED_CST_FIELD_OFFSET.  */
++static tree
++lookup_field_offset_field_decl (tree token)
++{
++  if (!token)
++    return NULL_TREE;
++
++  tree *slot
++    = field_offset_field_decls
++      ? field_offset_field_decls->get (token)
++      : NULL;
++
++  return slot ? *slot : NULL_TREE;
++}
++
++/* Create a call to IFN_DEFERRED_CST_FIELD_OFFSET for the physical,
++   addressable FIELD whose byte offset is deferred.
++
++   FIELD must not be a bit-field.  Callers handling bit-fields must pass
++   DECL_BIT_FIELD_REPRESENTATIVE (field).
++
++   Internally, these call hold the field declarations in a side-map
++   keyed by tokens used as call arguments.  */
++tree
++deferred_cst_call_ifn_field_offset (location_t loc, tree field)
++{
++  gcc_assert (field);
++  gcc_assert (TREE_CODE (field) == FIELD_DECL);
++  gcc_assert (!DECL_BIT_FIELD (field));
++
++  tree token = register_field_offset_field_decl (field);
++
++  return build_call_expr_internal_loc (loc,
++				       IFN_DEFERRED_CST_FIELD_OFFSET,
++				       sizetype, 1, token);
++}
++
++tree
++deferred_cst_ifn_field_offset_field (tree token)
++{
++  if (!token)
++    return NULL_TREE;
++
++  return lookup_field_offset_field_decl (token);
++}
++
++static tree
++find_deferred_cst_node (tree *tp, int *walk_subtrees, void *)
++{
++  tree node = *tp;
++
++  if (!node)
++    return NULL_TREE;
++
++  switch (TREE_CODE (node))
++    {
++    case DEFERRED_CST_EXPR:
++    case DEFERRED_CST_COMPONENT_REF:
++      *walk_subtrees = 0;
++      return node;
++
++    default:
++      break;
++    }
++
++  /* Declarations and types are metadata here. Do not walk into their
++     contexts, types, or initializers.  */
++  if (DECL_P (node) || TYPE_P (node))
++    *walk_subtrees = 0;
++
++  return NULL_TREE;
++}
++
++bool
++deferred_cst_present_p (tree expr)
++{
++  if (!expr)
++    return false;
++
++  tree root = expr;
++
++  return walk_tree_without_duplicates (
++	   &root,
++	   find_deferred_cst_node,
++	   NULL)
++	 != NULL_TREE;
++}
++
++/* Replace deferred cst components under DEFERRED_CST_EXPR nodes with
++   their compile-time values.
++
++   Calls to IFN_DEFERRED_CST_FIELD_OFFSET become the compile-time
++   field offsets.
++
++   Return NULL_TREE if no operation took place.  ICE if a substitution
++   failed.  */
++static tree
++substitute_deferred_cst_component (tree expr)
++{
++  if (!expr)
++    return NULL_TREE;
++
++  location_t loc = EXPR_LOCATION (expr);
++
++  if (TREE_CODE (expr) == CALL_EXPR)
++    {
++      if (CALL_EXPR_IFN (expr) == IFN_DEFERRED_CST_FIELD_OFFSET)
++	{
++	  gcc_assert (call_expr_nargs (expr) == 1);
++	  tree field
++	    = deferred_cst_ifn_field_offset_field (
++			    CALL_EXPR_ARG (expr, 0));
++
++	  gcc_assert (field && TREE_CODE (field) == FIELD_DECL);
++
++	  tree offset = byte_position (field);
++	  return fold_convert_loc (loc, TREE_TYPE (expr), offset);
++	}
++    }
++
++  return NULL_TREE;
++}
++
++/* Replace all deferred cst components with their compile-time values
++   and return the fully folded result.  */
++static tree
++substitute_deferred_cst_components (tree expr)
++{
++  if (CONSTANT_CLASS_P (expr))
++    return expr;
++
++  tree deferred_component = substitute_deferred_cst_component (expr);
++  if (deferred_component)
++    return deferred_component;
++
++  gcc_assert (deferred_cst_operator_p (TREE_CODE (expr)));
++
++  switch (TREE_OPERAND_LENGTH (expr))
++    {
++    case 1:
++      {
++	tree op0
++	  = substitute_deferred_cst_components (TREE_OPERAND (expr, 0));
++
++	return fold_build1_loc (EXPR_LOCATION (expr),
++				TREE_CODE (expr),
++				TREE_TYPE (expr),
++				op0);
++      }
++
++    case 2:
++      {
++	tree op0
++	  = substitute_deferred_cst_components (TREE_OPERAND (expr, 0));
++	tree op1
++	  = substitute_deferred_cst_components (TREE_OPERAND (expr, 1));
++
++	return fold_build2_loc (EXPR_LOCATION (expr),
++				TREE_CODE (expr),
++				TREE_TYPE (expr),
++				op0, op1);
++      }
++
++    case 3:
++      {
++	tree op0
++	  = substitute_deferred_cst_components (TREE_OPERAND (expr, 0));
++	tree op1
++	  = substitute_deferred_cst_components (TREE_OPERAND (expr, 1));
++	tree op2
++	  = substitute_deferred_cst_components (TREE_OPERAND (expr, 2));
++
++	return fold_build3_loc (EXPR_LOCATION (expr),
++				TREE_CODE (expr),
++				TREE_TYPE (expr),
++				op0, op1, op2);
++      }
++
++    default:
++      gcc_unreachable ();
++    }
++}
++
++/* Replace all deferred components in EXPR with their compile-time
++   values and evaluate the result.  Return an actual constant.  */
++static tree
++evaluate_deferred_cst_now (tree expr)
++{
++  tree result = substitute_deferred_cst_components (expr);
++  result = fold (result);
++
++  if (!CONSTANT_CLASS_P (result))
++    internal_error ("invalid compile-time value of deferred constant");
++
++  return result;
++}
++
++/* Returns true if the given tree node may not exist past the deferred
++   constant barrier pass.  */
++static bool
++deferred_cst_barrier_applies (tree node)
++{
++  if (!node)
++    return false;
++
++  switch (TREE_CODE (node))
++    {
++    case DEFERRED_CST_EXPR:
++    case DEFERRED_CST_COMPONENT_REF:
++      return true;
++
++    default:
++      return false;
++    }
++}
++
++/* On the deferred constant barrier pass, return the replacement for
++   a tree node that may not exist beyond it.
++
++   DEFERRED_CST_COMPONENT_REFs are simpy replaced with a standard
++   COMPONENT_REF node.
++
++   All deferred components under a DEFERRED_CST_EXPR are replaced with
++   their actual compile-time values.  Afterwards, the expression is
++   fully evaluated to replace NODE.  */
++static tree
++deferred_cst_barrier_apply (tree node)
++{
++  gcc_assert (deferred_cst_barrier_applies (node));
++
++  if (flag_deferred_cst_barrier_hard)
++    internal_error (
++      "unresolved deferred constant reached hard barrier");
++
++  switch (TREE_CODE (node))
++    {
++    case DEFERRED_CST_EXPR:
++      return evaluate_deferred_cst_now (TREE_OPERAND (node, 0));
++
++    case DEFERRED_CST_COMPONENT_REF:
++      {
++	tree ref
++	  = build3_loc (EXPR_LOCATION (node),
++			COMPONENT_REF,
++			TREE_TYPE (node),
++			TREE_OPERAND (node, 0),
++			TREE_OPERAND (node, 1),
++			NULL_TREE);
++
++	/* Preserve expression properties that may have been attached
++	   to the deferred reference during lowering.  */
++	TREE_READONLY (ref) = TREE_READONLY (node);
++	TREE_THIS_VOLATILE (ref) = TREE_THIS_VOLATILE (node);
++	TREE_SIDE_EFFECTS (ref) = TREE_SIDE_EFFECTS (node);
++
++	return ref;
++      }
++
++    default:
++      gcc_unreachable ();
++    }
++}
++
++/* Walker to go through functions and initializers.  It applies the
++   deferred constant barrier to all deferred constant tree nodes.  */
++static tree
++deferred_cst_barrier_walk (tree *tp, int *walk_subtrees, void *data)
++{
++  tree node = *tp;
++
++  if (!node)
++    return NULL_TREE;
++
++  if (TYPE_P (node) || DECL_P (node))
++    {
++      *walk_subtrees = 0;
++      return NULL_TREE;
++    }
++
++  if (!deferred_cst_barrier_applies (node))
++    return NULL_TREE;
++
++  /*
++     A deferred component can have another deferred component in its base.
++     Clean the base explicitly before replacing the outer node.  Operand 1
++     is a FIELD_DECL and must not be walked.
++  */
++  if (TREE_CODE (node) == DEFERRED_CST_COMPONENT_REF)
++    {
++      tree base = TREE_OPERAND (node, 0);
++
++      walk_tree (&base,
++		 deferred_cst_barrier_walk,
++		 data,
++		 NULL);
++
++      TREE_OPERAND (node, 0) = base;
++    }
++
++  *tp = deferred_cst_barrier_apply (node);
++  *walk_subtrees = 0;
++
++  return NULL_TREE;
++}
++
++static void
++deferred_cst_barrier_function (function *fn)
++{
++  basic_block bb;
++
++  FOR_EACH_BB_FN (bb, fn)
++    {
++      for (gimple_stmt_iterator gsi = gsi_start_bb (bb);
++	   !gsi_end_p (gsi);
++	   gsi_next (&gsi))
++	{
++	  gimple *stmt = gsi_stmt (gsi);
++
++	  for (unsigned int i = 0; i < gimple_num_ops (stmt); ++i)
++	    {
++	      tree *operand = gimple_op_ptr (stmt, i);
++
++	      if (!operand || !*operand)
++		continue;
++
++	      walk_tree (operand,
++			 deferred_cst_barrier_walk,
++			 NULL,
++			 NULL);
++	    }
++	}
++    }
++}
++
++static tree
++deferred_cst_barrier_init (tree init)
++{
++  if (!init)
++    return init;
++
++  walk_tree (&init, deferred_cst_barrier_walk, NULL, NULL);
++
++  return init;
++}
++
++static void
++deferred_cst_barrier_functions ()
++{
++  cgraph_node *node;
++
++  FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
++    {
++      function *fn = DECL_STRUCT_FUNCTION (node->decl);
++      gcc_assert (fn);
++
++      push_cfun (fn);
++      deferred_cst_barrier_function (fn);
++      pop_cfun ();
++    }
++}
++
++static void
++deferred_cst_barrier_inits ()
++{
++  varpool_node *vnode;
++
++  FOR_EACH_VARIABLE (vnode)
++    {
++      tree decl = vnode->decl;
++      tree init = DECL_INITIAL (decl);
++
++      if (!init || init == error_mark_node)
++	continue;
++
++      tree clean_init = deferred_cst_barrier_init (init);
++      if (clean_init != init)
++	DECL_INITIAL (decl) = clean_init;
++    }
++}
++
++namespace {
++
++const pass_data pass_data_deferred_cst_barrier =
++{
++  SIMPLE_IPA_PASS,
++  "deferred-cst-barrier",
++  OPTGROUP_NONE,
++  TV_NONE,
++  0, 0, 0, 0, 0
++};
++
++class pass_deferred_cst_barrier : public simple_ipa_opt_pass
++{
++public:
++  pass_deferred_cst_barrier (gcc::context *ctxt)
++    : simple_ipa_opt_pass (pass_data_deferred_cst_barrier, ctxt)
++  {}
++
++  unsigned int execute (function *) final override;
++};
++
++unsigned int
++pass_deferred_cst_barrier::execute (function *)
++{
++  deferred_cst_barrier_functions ();
++  deferred_cst_barrier_inits ();
++  return 0;
++}
++
++} // anonymous namespace
++
++simple_ipa_opt_pass *
++make_pass_deferred_cst_barrier (gcc::context *ctxt)
++{
++  return new pass_deferred_cst_barrier (ctxt);
++}
++
++#include "gt-deferred-cst.h"
+diff --git a/gcc/deferred-cst.h b/gcc/deferred-cst.h
+new file mode 100644
+index 00000000000..d475030de01
+--- /dev/null
++++ b/gcc/deferred-cst.h
+@@ -0,0 +1,39 @@
++#ifndef GCC_DEFERRED_CST_H
++#define GCC_DEFERRED_CST_H
++
++/* Returns true of accesses to fields of this type should be based on
++   deferred cst offsets.  This is the case on RECORD_TYPEs with
++
++     __attribute__((deferred_cst_access))  */
++extern bool deferred_cst_access_type_p (tree type);
++
++/* Returns true if FIELD is part of a type that satisfies
++   deferred_cst_access_type_p.  */
++extern bool deferred_cst_field_p (tree field);
++
++/* Return true if CODE is an operation which may be absorbed into a
++   DEFERRED_CST_EXPR.  */
++extern bool deferred_cst_operator_p (enum tree_code code);
++
++/* Build DEFERRED_CST_COMPONENT_REF to FIELD in BASE.  */
++extern tree deferred_cst_build_component_ref (tree type, tree base, tree field);
++
++/* Build a DEFERRED_CST_EXPR around EXPR.  */
++extern tree deferred_cst_build_expr (tree expr);
++
++/* Create a call to IFN_DEFERRED_CST_FIELD_OFFSET for the physical,
++   addressable FIELD whose byte offset is deferred.
++
++   FIELD must not be a bit-field.  Callers handling bit-fields must pass
++   DECL_BIT_FIELD_REPRESENTATIVE (field).  */
++extern tree deferred_cst_call_ifn_field_offset (location_t loc, tree field);
++
++/* Get the FIELD_DECL associated with the argument TOKEN to a call of
++   IFN_DEFERRED_CST_FIELD_OFFSET.  */
++extern tree deferred_cst_ifn_field_offset_field (tree token);
++
++/* Return true if EXPR contains a DEFERRED_CST_EXPR or
++   DEFERRED_CST_COMPONENT_REF.  */
++extern bool deferred_cst_present_p (tree expr);
++
++#endif
+diff --git a/gcc/expr.cc b/gcc/expr.cc
+index 7ca5dd84ce9..d0925557cef 100644
+--- a/gcc/expr.cc
++++ b/gcc/expr.cc
+@@ -66,6 +66,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "tree-pretty-print.h"
+ #include "flags.h"
+ #include "internal-fn.h"
++#include "deferred-cst.h"
+ 
+ 
+ /* If this is nonzero, we do not bother generating VOLATILE
+@@ -8460,6 +8461,7 @@ store_field (rtx target, poly_int64 bitsize, poly_int64 bitpos,
+     }
+ }
+ 
++
+ /* Given an expression EXP that may be a COMPONENT_REF, a BIT_FIELD_REF,
+    an ARRAY_REF, or an ARRAY_RANGE_REF, look for nested operations of these
+    codes and find the ultimate containing object, which we return.
+@@ -8497,7 +8499,8 @@ get_inner_reference (tree exp, poly_int64 *pbitsize,
+   /* First get the mode, signedness, storage order and size.  We do this from
+      just the outermost expression.  */
+   *pbitsize = -1;
+-  if (TREE_CODE (exp) == COMPONENT_REF)
++  if (TREE_CODE (exp) == COMPONENT_REF
++      || TREE_CODE (exp) == DEFERRED_CST_COMPONENT_REF)
+     {
+       tree field = TREE_OPERAND (exp, 1);
+       size_tree = DECL_SIZE (field);
+@@ -8585,6 +8588,36 @@ get_inner_reference (tree exp, poly_int64 *pbitsize,
+ 	  }
+ 	  break;
+ 
++	case DEFERRED_CST_COMPONENT_REF:
++	  {
++	    tree field = TREE_OPERAND (exp, 1);
++	    tree deferred_cst_field = field;
++
++	    if (DECL_BIT_FIELD (field))
++	      {
++		deferred_cst_field = DECL_BIT_FIELD_REPRESENTATIVE (field);
++
++		gcc_assert (deferred_cst_field);
++		gcc_assert (TREE_CODE (deferred_cst_field) == FIELD_DECL);
++		gcc_assert (!DECL_BIT_FIELD (deferred_cst_field));
++
++		tree relative_bit_offset
++		  = size_binop (MINUS_EXPR,
++				bit_position (field),
++				bit_position (deferred_cst_field));
++
++		gcc_assert (poly_int_tree_p (relative_bit_offset));
++		bit_offset += wi::to_poly_offset (relative_bit_offset);
++	      }
++
++	    tree this_offset = deferred_cst_call_ifn_field_offset (
++					EXPR_LOCATION (exp),
++					deferred_cst_field);
++	    this_offset = deferred_cst_build_expr (this_offset);
++	    offset = size_binop (PLUS_EXPR, offset, this_offset);
++	  }
++	  break;
++
+ 	case ARRAY_REF:
+ 	case ARRAY_RANGE_REF:
+ 	  {
+diff --git a/gcc/fold-const.cc b/gcc/fold-const.cc
+index 56503e570bc..2fb0287b927 100644
+--- a/gcc/fold-const.cc
++++ b/gcc/fold-const.cc
+@@ -11139,6 +11139,20 @@ fold_binary_loc (location_t loc, enum tree_code code, tree type,
+ 
+   switch (code)
+     {
++    case DEFERRED_CST_COMPONENT_REF:
++      if (TREE_CODE (arg0) == CONSTRUCTOR
++	  && ! type_contains_placeholder_p (TREE_TYPE (arg0)))
++	{
++	  unsigned HOST_WIDE_INT idx;
++	  tree field;
++	  tree value;
++
++	  FOR_EACH_CONSTRUCTOR_ELT (CONSTRUCTOR_ELTS (arg0), idx, field, value)
++	    if (field == arg1)
++	      return value;
++	}
++      return NULL_TREE;
++
+     case MEM_REF:
+       /* MEM[&MEM[p, CST1], CST2] -> MEM[p, CST1 + CST2].  */
+       if (TREE_CODE (arg0) == ADDR_EXPR
+diff --git a/gcc/gimple-expr.cc b/gcc/gimple-expr.cc
+index 96f9fc720af..fabd6e10ea1 100644
+--- a/gcc/gimple-expr.cc
++++ b/gcc/gimple-expr.cc
+@@ -846,6 +846,11 @@ is_gimple_val (tree t)
+       || TREE_CODE (t) == OMP_TARGET_DEVICE_MATCHES)
+     return true;
+ 
++  /* Technically, deferred constant expressions act as min invariants,
++     but they do not survice to where that would be relevant.  */
++  if (TREE_CODE (t) == DEFERRED_CST_EXPR)
++    return true;
++
+   return (is_gimple_variable (t) || is_gimple_min_invariant (t));
+ }
+ 
+diff --git a/gcc/gimple.cc b/gcc/gimple.cc
+index c791e041243..7918552fce1 100644
+--- a/gcc/gimple.cc
++++ b/gcc/gimple.cc
+@@ -2564,7 +2564,8 @@ get_gimple_rhs_num_ops (enum tree_code code)
+       || (SYM) == WITH_SIZE_EXPR					    \
+       || (SYM) == SSA_NAME						    \
+       || (SYM) == OMP_NEXT_VARIANT					    \
+-      || (SYM) == OMP_TARGET_DEVICE_MATCHES) ? GIMPLE_SINGLE_RHS	    \
++      || (SYM) == OMP_TARGET_DEVICE_MATCHES				    \
++      || (SYM) == DEFERRED_CST_EXPR) ? GIMPLE_SINGLE_RHS		    \
+    : GIMPLE_INVALID_RHS),
+ #define END_OF_BASE_TREE_CODES (unsigned char) GIMPLE_INVALID_RHS,
+ 
+diff --git a/gcc/gimplify.cc b/gcc/gimplify.cc
+index 8bfc71315f9..ed7303e4425 100644
+--- a/gcc/gimplify.cc
++++ b/gcc/gimplify.cc
+@@ -75,6 +75,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "recog.h"
+ #include "output.h"
+ #include "gimplify_reg_info.h"
++#include "deferred-cst.h"
+ 
+ /* Identifier for a basic condition, mapping it to other basic conditions of
+    its Boolean expression.  Basic conditions given the same uid (in the same
+@@ -3497,8 +3498,8 @@ recalculate_side_effects (tree t)
+    }
+ }
+ 
+-/* Gimplify the COMPONENT_REF, ARRAY_REF, REALPART_EXPR or IMAGPART_EXPR
+-   node *EXPR_P.
++/* Gimplify the COMPONENT_REF, DEFERRED_CST_COMPONENT_REF, ARRAY_REF,
++   REALPART_EXPR or IMAGPART_EXPR node *EXPR_P.
+ 
+       compound_lval
+ 	      : min_lval '[' val ']'
+@@ -6086,7 +6087,7 @@ gimplify_init_ctor_preeval (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p,
+    already been taken care of for us, in gimplify_init_ctor_preeval().  */
+ 
+ static void gimplify_init_ctor_eval (tree, vec<constructor_elt, va_gc> *,
+-				     gimple_seq *, bool);
++				     gimple_seq *, bool, bool);
+ 
+ static void
+ gimplify_init_ctor_eval_range (tree object, tree lower, tree upper,
+@@ -6116,10 +6117,15 @@ gimplify_init_ctor_eval_range (tree object, tree lower, tree upper,
+      the store.  Otherwise just assign value to the reference.  */
+ 
+   if (TREE_CODE (value) == CONSTRUCTOR)
+-    /* NB we might have to call ourself recursively through
+-       gimplify_init_ctor_eval if the value is a constructor.  */
+-    gimplify_init_ctor_eval (cref, CONSTRUCTOR_ELTS (value),
+-			     pre_p, cleared);
++    {
++      /* NB we might have to call ourself recursively through
++	 gimplify_init_ctor_eval if the value is a constructor.  */
++      bool deferred_cst_value
++	= deferred_cst_access_type_p (TREE_TYPE (value));
++
++      gimplify_init_ctor_eval (cref, CONSTRUCTOR_ELTS (value),
++			       pre_p, cleared, deferred_cst_value);
++    }
+   else
+     {
+       if (gimplify_expr (&value, pre_p, NULL, is_gimple_val, fb_rvalue)
+@@ -6154,7 +6160,8 @@ gimplify_init_ctor_eval_range (tree object, tree lower, tree upper,
+ 
+ static void
+ gimplify_init_ctor_eval (tree object, vec<constructor_elt, va_gc> *elts,
+-			 gimple_seq *pre_p, bool cleared)
++			 gimple_seq *pre_p, bool cleared,
++			 bool deferred_cst)
+ {
+   tree array_elt_type = NULL;
+   unsigned HOST_WIDE_INT ix;
+@@ -6220,14 +6227,25 @@ gimplify_init_ctor_eval (tree object, vec<constructor_elt, va_gc> *elts,
+       else
+ 	{
+ 	  gcc_assert (TREE_CODE (purpose) == FIELD_DECL);
+-	  cref = build3 (COMPONENT_REF, TREE_TYPE (purpose),
+-			 unshare_expr (object), purpose, NULL_TREE);
++	  tree base = unshare_expr (object);
++
++	  if (deferred_cst)
++	    cref = deferred_cst_build_component_ref (TREE_TYPE (purpose),
++						     base, purpose);
++	  else
++	    cref = build3 (COMPONENT_REF, TREE_TYPE (purpose),
++			   base, purpose, NULL_TREE);
+ 	}
+ 
+       if (TREE_CODE (value) == CONSTRUCTOR
+ 	  && TREE_CODE (TREE_TYPE (value)) != VECTOR_TYPE)
+-	gimplify_init_ctor_eval (cref, CONSTRUCTOR_ELTS (value),
+-				 pre_p, cleared);
++	{
++	  bool value_deferred_cst
++	    = deferred_cst_access_type_p (TREE_TYPE (value));
++
++	  gimplify_init_ctor_eval (cref, CONSTRUCTOR_ELTS (value),
++				   pre_p, cleared, value_deferred_cst);
++	}
+       else if (TREE_CODE (value) == RAW_DATA_CST)
+ 	{
+ 	  if (RAW_DATA_LENGTH (value) <= 32)
+@@ -6418,6 +6436,7 @@ gimplify_init_constructor (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p,
+   bool cleared = false;
+   bool is_empty_ctor = false;
+   bool is_init_expr = (TREE_CODE (*expr_p) == INIT_EXPR);
++  bool deferred_cst = false;
+ 
+   gcc_assert (TREE_CODE (TREE_OPERAND (*expr_p, 1)) == CONSTRUCTOR);
+ 
+@@ -6434,6 +6453,8 @@ gimplify_init_constructor (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p,
+     = optimize_compound_literals_in_ctor (TREE_OPERAND (*expr_p, 1));
+   type = TREE_TYPE (ctor);
+   elts = CONSTRUCTOR_ELTS (ctor);
++  deferred_cst
++    = deferred_cst_access_type_p (TREE_TYPE (ctor));
+   ret = GS_ALL_DONE;
+ 
+   switch (TREE_CODE (type))
+@@ -6698,7 +6719,8 @@ gimplify_init_constructor (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p,
+ 	if (!cleared
+ 	    || num_nonzero_elements > 0
+ 	    || ctor_has_side_effects_p)
+-	  gimplify_init_ctor_eval (object, elts, pre_p, cleared);
++	  gimplify_init_ctor_eval (object, elts, pre_p, cleared,
++				   deferred_cst);
+ 
+ 	*expr_p = NULL_TREE;
+       }
+@@ -20425,6 +20447,7 @@ gimplify_expr (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p,
+ 	case REALPART_EXPR:
+ 	case IMAGPART_EXPR:
+ 	case COMPONENT_REF:
++	case DEFERRED_CST_COMPONENT_REF:
+ 	  ret = gimplify_compound_lval (expr_p, pre_p, post_p,
+ 					fallback ? fallback : fb_rvalue);
+ 	  break;
+@@ -20658,6 +20681,11 @@ gimplify_expr (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p,
+ 	  ret = GS_ALL_DONE;
+ 	  break;
+ 
++	case DEFERRED_CST_EXPR:
++	  /* DEFERRED_CST_EXPRs act as min invariants.  */
++	  ret = GS_ALL_DONE;
++	  break;
++
+ 	case CONST_DECL:
+ 	  /* If we require an lvalue, such as for ADDR_EXPR, retain the
+ 	     CONST_DECL node.  Otherwise the decl is replaceable by its
+diff --git a/gcc/internal-fn.cc b/gcc/internal-fn.cc
+index 65be5aed35c..88a7334dadb 100644
+--- a/gcc/internal-fn.cc
++++ b/gcc/internal-fn.cc
+@@ -4266,6 +4266,15 @@ expand_reduc_sbool_optab_fn (internal_fn fn, gcall *stmt, direct_optab optab)
+     assign_call_lhs (lhs, lhs_rtx, &ops[0]);
+ }
+ 
++/* IFN_DEFERRED_CST_FIELD_OFFSET should not survice GIMPLE.  */
++
++void
++expand_DEFERRED_CST_FIELD_OFFSET (internal_fn, gcall *)
++{
++  internal_error (
++    "IFN_DEFERRED_CST_FIELD_OFFSET reached RTL expansion without being lowered");
++}
++
+ /* Expanders for optabs that can use expand_direct_optab_fn.  */
+ 
+ #define expand_unary_optab_fn(FN, STMT, OPTAB) \
+diff --git a/gcc/internal-fn.def b/gcc/internal-fn.def
+index 084a9271631..ce8aacf803f 100644
+--- a/gcc/internal-fn.def
++++ b/gcc/internal-fn.def
+@@ -622,6 +622,9 @@ DEF_INTERNAL_FN (BITINTTOFLOAT, ECF_PURE | ECF_LEAF, ". R . ")
+ DEF_INTERNAL_OPTAB_FN (BIT_ANDN, ECF_CONST, andn, binary)
+ DEF_INTERNAL_OPTAB_FN (BIT_IORN, ECF_CONST, iorn, binary)
+ 
++/* Deferred constant functions.  */
++DEF_INTERNAL_FN (DEFERRED_CST_FIELD_OFFSET, ECF_CONST | ECF_LEAF | ECF_NOTHROW, NULL)
++
+ #undef DEF_INTERNAL_WIDENING_OPTAB_FN
+ #undef DEF_INTERNAL_SIGNED_COND_FN
+ #undef DEF_INTERNAL_COND_FN
+diff --git a/gcc/passes.def b/gcc/passes.def
+index cdddb87302f..2b14864d200 100644
+--- a/gcc/passes.def
++++ b/gcc/passes.def
+@@ -47,6 +47,7 @@ along with GCC; see the file COPYING3.  If not see
+ 
+   /* Interprocedural optimization passes.  */
+   INSERT_PASSES_AFTER (all_small_ipa_passes)
++  NEXT_PASS (pass_deferred_cst_barrier);
+   /* auto_profile_offline uses dwarf_name hook that only
+      works before free_lang_data.  */
+   NEXT_PASS (pass_ipa_auto_profile_offline);
+diff --git a/gcc/tree-pass.h b/gcc/tree-pass.h
+index b3c97658a8f..eddec889dc2 100644
+--- a/gcc/tree-pass.h
++++ b/gcc/tree-pass.h
+@@ -513,6 +513,7 @@ extern gimple_opt_pass *make_pass_coroutine_early_expand_ifns (gcc::context *ctx
+ extern gimple_opt_pass *make_pass_adjust_alignment (gcc::context *ctxt);
+ 
+ /* IPA Passes */
++extern simple_ipa_opt_pass *make_pass_deferred_cst_barrier (gcc::context *ctxt);
+ extern simple_ipa_opt_pass *make_pass_ipa_lower_emutls (gcc::context *ctxt);
+ extern simple_ipa_opt_pass *make_pass_ipa_function_and_variable_visibility (gcc::context *ctxt);
+ extern simple_ipa_opt_pass *make_pass_ipa_strub_mode (gcc::context *ctxt);
+diff --git a/gcc/tree-pretty-print.cc b/gcc/tree-pretty-print.cc
+index 79e0a734dbb..79251619fbe 100644
+--- a/gcc/tree-pretty-print.cc
++++ b/gcc/tree-pretty-print.cc
+@@ -2837,6 +2837,7 @@ dump_generic_node (pretty_printer *pp, tree node, int spc, dump_flags_t flags,
+       break;
+ 
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+       op0 = TREE_OPERAND (node, 0);
+       str = ".";
+       if (op0
+@@ -2873,16 +2874,21 @@ dump_generic_node (pretty_printer *pp, tree node, int spc, dump_flags_t flags,
+       if (op_prio (op0) < op_prio (node))
+ 	pp_right_paren (pp);
+       pp_string (pp, str);
++      if (code == DEFERRED_CST_COMPONENT_REF)
++	pp_string (pp, "DEFERRED<");
+       op1 = TREE_OPERAND (node, 1);
+       dump_generic_node (pp, op1, spc, flags, false);
+-      if (DECL_P (op1)) /* Not always a decl in the C++ FE.  */
+-	if (tree off = component_ref_field_offset (node))
+-	  if (TREE_CODE (off) != INTEGER_CST)
+-	    {
+-	      pp_string (pp, "{off: ");
+-	      dump_generic_node (pp, off, spc, flags, false);
+-	      pp_right_brace (pp);
+-	    }
++      if (code == DEFERRED_CST_COMPONENT_REF)
++	pp_string (pp, ">");
++      else
++	if (DECL_P (op1)) /* Not always a decl in the C++ FE.  */
++	  if (tree off = component_ref_field_offset (node))
++	    if (TREE_CODE (off) != INTEGER_CST)
++	      {
++		pp_string (pp, "{off: ");
++		dump_generic_node (pp, off, spc, flags, false);
++		pp_right_brace (pp);
++	      }
+       break;
+ 
+     case BIT_FIELD_REF:
+@@ -4344,6 +4350,13 @@ dump_generic_node (pretty_printer *pp, tree node, int spc, dump_flags_t flags,
+       }
+       break;
+ 
++    case DEFERRED_CST_EXPR:
++      pp_string (pp, "DEFERRED_CST_EXPR <");
++      dump_generic_node (pp, TREE_OPERAND (node, 0),
++			 spc, flags, false);
++      pp_character (pp, '>');
++      break;
++
+     case OMP_TARGET_DEVICE_MATCHES:
+       pp_string (pp, "OMP_TARGET_DEVICE_MATCHES <");
+       dump_generic_node (pp, OMP_TARGET_DEVICE_MATCHES_SELECTOR (node), spc,
+@@ -4790,6 +4803,7 @@ op_code_prio (enum tree_code code)
+     case ARRAY_REF:
+     case ARRAY_RANGE_REF:
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+       return 15;
+ 
+       /* Special expressions.  */
+@@ -5052,6 +5066,7 @@ print_call_name (pretty_printer *pp, tree node, dump_flags_t flags)
+ 	}
+       /* Fallthru.  */
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+     case SSA_NAME:
+     case OBJ_TYPE_REF:
+       dump_generic_node (pp, op0, 0, flags, false);
+diff --git a/gcc/tree.cc b/gcc/tree.cc
+index 2868cb0867d..a9bd63b0a34 100644
+--- a/gcc/tree.cc
++++ b/gcc/tree.cc
+@@ -76,6 +76,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "asan.h"
+ #include "ubsan.h"
+ #include "attr-callback.h"
++#include "deferred-cst.h"
+ 
+ /* Names of tree components.
+    Used for printing out the tree and error messages.  */
+@@ -3908,7 +3909,13 @@ staticp (tree arg)
+ 	      ? arg : NULL);
+ 
+     case CONSTRUCTOR:
+-      return TREE_STATIC (arg) ? arg : NULL;
++      {
++	if (!flag_deferred_cst_static
++	    && deferred_cst_access_type_p (TREE_TYPE (arg)))
++	  return NULL;
++
++	return TREE_STATIC (arg) ? arg : NULL;
++      }
+ 
+     case LABEL_DECL:
+     case STRING_CST:
+@@ -3926,6 +3933,16 @@ staticp (tree arg)
+ 
+       return staticp (TREE_OPERAND (arg, 0));
+ 
++    case DEFERRED_CST_COMPONENT_REF:
++      {
++	/* Deferred cst references are only compatible with static data if
++	   explicitly permitted by -fdeferred-cst-static  */
++	if (flag_deferred_cst_static)
++	  return staticp (TREE_OPERAND (arg, 0));
++	else
++	  return NULL;
++      }
++
+     case BIT_FIELD_REF:
+       return NULL;
+ 
+diff --git a/gcc/tree.def b/gcc/tree.def
+index ad8e676e942..43e94d0c361 100644
+--- a/gcc/tree.def
++++ b/gcc/tree.def
+@@ -443,6 +443,11 @@ DEFTREECODE (TRANSLATION_UNIT_DECL, "translation_unit_decl",\
+    in units of DECL_OFFSET_ALIGN / BITS_PER_UNIT.  */
+ DEFTREECODE (COMPONENT_REF, "component_ref", tcc_reference, 3)
+ 
++/* Value is a structure component with a deferred constant offset.
++   Operand 0 is the structure expression.
++   Operand 1 is the field (a node of type FIELD_DECL).  */
++DEFTREECODE (DEFERRED_CST_COMPONENT_REF, "deferred_cst_component_ref", tcc_reference, 2)
++
+ /* Reference to a group of bits within an object.  Similar to COMPONENT_REF
+    except the position is given explicitly rather than via a FIELD_DECL.
+    Operand 0 is the structure or union expression;
+@@ -1610,6 +1615,14 @@ DEFTREECODE (TARGET_OPTION_NODE, "target_option_node", tcc_exceptional, 0)
+    Operand 2 is additional data.  */
+ DEFTREECODE (ANNOTATE_EXPR, "annotate_expr", tcc_expression, 3)
+ 
++/* DEFERRED_CST_EXPR.
++   Operand 0 is an expression with deferred const-ness.
++   Such expressions are not constant at compile-time, but become
++   constant before the normal runtime.  For example, a
++   DEFERRED_CST_EXPR may wrap offsetof-like expressions that depend
++   on DEFERRED_CST_COMPONENT_REFs.  */
++DEFTREECODE (DEFERRED_CST_EXPR, "deferred_cst_expr", tcc_expression, 1)
++
+ /*
+ Local variables:
+ mode:c
+diff --git a/gcc/tree.h b/gcc/tree.h
+index f8b2d718b7e..386a62051a8 100644
+--- a/gcc/tree.h
++++ b/gcc/tree.h
+@@ -5545,6 +5545,7 @@ handled_component_p (const_tree t)
+   switch (TREE_CODE (t))
+     {
+     case COMPONENT_REF:
++    case DEFERRED_CST_COMPONENT_REF:
+     case BIT_FIELD_REF:
+     case ARRAY_REF:
+     case ARRAY_RANGE_REF:
+diff --git a/gcc/varasm.cc b/gcc/varasm.cc
+index 5999f1e5420..b11c4d6c740 100644
+--- a/gcc/varasm.cc
++++ b/gcc/varasm.cc
+@@ -64,6 +64,7 @@ along with GCC; see the file COPYING3.  If not see
+ #include "asan.h"
+ #include "recog.h"
+ #include "gimple-expr.h"
++#include "deferred-cst.h"
+ 
+ /* The (assembler) name of the first globally-visible object output.  */
+ extern GTY(()) const char *first_global_object_name;
+@@ -5056,7 +5057,12 @@ initializer_constant_valid_p_1 (tree value, tree endtype, tree *cache)
+   switch (TREE_CODE (value))
+     {
+     case CONSTRUCTOR:
+-      if (constructor_static_from_elts_p (value))
++      if (!flag_deferred_cst_static
++	  && deferred_cst_access_type_p (TREE_TYPE (value)))
++	return NULL_TREE;
++
++      if (constructor_static_from_elts_p (value)
++	  || flag_deferred_cst_static)
+ 	{
+ 	  unsigned HOST_WIDE_INT idx;
+ 	  tree elt;
+@@ -5107,6 +5113,16 @@ initializer_constant_valid_p_1 (tree value, tree endtype, tree *cache)
+     case RAW_DATA_CST:
+       return null_pointer_node;
+ 
++    case DEFERRED_CST_EXPR:
++      {
++	/* Deferred constants are only allowed in static initializers
++	   if explicitly permitted by -fdeferred-cst-static  */
++	if (flag_deferred_cst_static)
++	  return null_pointer_node;
++	else
++	  return NULL_TREE;
++      }
++
+     case ADDR_EXPR:
+     case FDESC_EXPR:
+       {
+-- 
+2.43.0
+
